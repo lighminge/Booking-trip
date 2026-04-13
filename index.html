@@ -184,16 +184,20 @@
             return slots;
         };
 
-        const VENUE_OPTIONS = ['A會議室', 'B會議室', 'C展演廳', '戶外廣場'];
+        // 班級選項 (加上相關的小插圖)
+        const CLASS_OPTIONS = ['🐻 小熊班', '🐧 企鵝班', '⭐ 星星班', '☀️ 太陽班', '❄️ 雪花班', '☁️ 白雲班'];
 
         // --- 主程式區 ---
         const App = () => {
             // 狀態管理
             const [reservations, setReservations] = useState([]);
             const [currentDate, setCurrentDate] = useState(new Date());
-            const [maxCapacity, setMaxCapacity] = useState(3);
             const [useLocalMode, setUseLocalMode] = useState(false); // 核心：是否降級為單機模式
             
+            // 系統設定狀態 (從 localStorage 讀取以保持記憶)
+            const [maxCapacity, setMaxCapacity] = useState(() => Number(localStorage.getItem('max_capacity')) || 3);
+            const [isCapacityLocked, setIsCapacityLocked] = useState(() => localStorage.getItem('capacity_locked') === 'true');
+
             // 自訂 Dialog 狀態
             const [dialog, setDialog] = useState({ isOpen: false, message: '', type: 'alert', onConfirm: null, expectedPin: '', pinToCopy: '', warning: '' });
             const [pinInput, setPinInput] = useState('');
@@ -221,10 +225,8 @@
             const handleFirebaseError = (error, actionName) => {
                 console.warn(`Firebase ${actionName}錯誤 (已自動切換單機模式):`, error);
                 
-                // 只要出錯，立刻強制切換為單機模式，確保系統可用
                 setUseLocalMode(true); 
 
-                // 嘗試從本地載入先前存的資料，以免畫面變空白
                 try {
                     const savedData = localStorage.getItem(LOCAL_STORAGE_KEY);
                     if (savedData) setReservations(JSON.parse(savedData));
@@ -245,7 +247,6 @@
 
             // --- 初始載入與 Firebase 連線 ---
             useEffect(() => {
-                // 先試著載入本機資料當作保底
                 try {
                     const savedData = localStorage.getItem(LOCAL_STORAGE_KEY);
                     if (savedData) setReservations(JSON.parse(savedData));
@@ -262,7 +263,7 @@
             }, []);
 
             useEffect(() => {
-                if (useLocalMode) return; // 如果已經是單機模式，就不監聽雲端了
+                if (useLocalMode) return;
 
                 const unsubscribeDB = dbCollection.onSnapshot((snapshot) => {
                     const loadedReservations = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -279,7 +280,7 @@
                 id: null,
                 name: '',
                 reason: '',
-                venue: VENUE_OPTIONS[0],
+                venue: CLASS_OPTIONS[0], // 預設為小熊班
                 startDate: formatDate(new Date()),
                 endDate: formatDate(new Date()),
                 startAmpm: 'AM',
@@ -301,6 +302,20 @@
                 });
             };
 
+            // 處理鎖定/解鎖容量設定
+            const handleLockToggle = () => {
+                if (isCapacityLocked) {
+                    showPinPrompt('請輸入管理員密碼以解鎖設定：', '8888', () => {
+                        setIsCapacityLocked(false);
+                        localStorage.setItem('capacity_locked', 'false');
+                        showAlert('🔓 設定已解鎖！現在可以修改最高預約數了。');
+                    }, 'admin_unlock');
+                } else {
+                    setIsCapacityLocked(true);
+                    localStorage.setItem('capacity_locked', 'true');
+                }
+            };
+
             const copyToClipboard = (text) => {
                 const textArea = document.createElement("textarea");
                 textArea.value = text;
@@ -312,6 +327,9 @@
 
             const handleSubmit = (e) => {
                 e.preventDefault();
+                
+                // 防呆：必須選擇特定班級
+                if (formData.venue === '全部') return showAlert('請選擇特定的班級來進行預約喔！');
                 
                 if (!formData.name.trim()) return showAlert('請輸入名字喔！');
                 if (!formData.reason.trim()) return showAlert('請輸入預約事由喔！');
@@ -336,7 +354,7 @@
                         }
                     }
                     if (venueOverlappingCount >= maxCapacity) {
-                        return showAlert(`Oops！【${formData.venue}】在 ${slot} 的預約已達上限（${maxCapacity}筆）！請選擇其他場地或時段。`);
+                        return showAlert(`Oops！【${formData.venue}】在 ${slot} 的預約已達上限（${maxCapacity}筆）！請選擇其他班級或時段。`);
                     }
                 }
 
@@ -386,7 +404,6 @@
                             showAlert('🎉 預約資料已成功更新！');
                         }).catch(err => {
                             handleFirebaseError(err, "雲端更新");
-                            // 失敗時自動轉為本機儲存保底
                             const updated = reservations.map(res => res.id === formData.id ? newReservationData : res);
                             saveToLocalDatabase(updated);
                             setIsEditing(false);
@@ -407,7 +424,6 @@
                             });
                         }).catch(err => {
                             handleFirebaseError(err, "雲端新增");
-                            // 失敗時自動轉為本機儲存保底
                             const updated = [...reservations, newReservationData];
                             saveToLocalDatabase(updated);
                         });
@@ -415,7 +431,7 @@
                 }
 
                 setFormData(prev => ({
-                    ...prev, id: null, name: '', reason: '', venue: VENUE_OPTIONS[0],
+                    ...prev, id: null, name: '', reason: '', venue: CLASS_OPTIONS[0],
                     startAmpm: 'AM', startHour: '09', endAmpm: 'AM', endHour: '10', pin: ''
                 }));
             };
@@ -423,7 +439,7 @@
             const handleCancelEdit = () => {
                 setIsEditing(false);
                 setFormData({
-                    id: null, name: '', reason: '', venue: VENUE_OPTIONS[0],
+                    id: null, name: '', reason: '', venue: CLASS_OPTIONS[0],
                     startDate: formatDate(new Date()), endDate: formatDate(new Date()),
                     startAmpm: 'AM', startHour: '09', endAmpm: 'AM', endHour: '10', pin: ''
                 });
@@ -431,7 +447,7 @@
 
             const handleEditClick = (res) => {
                 setFormData({
-                    id: res.id, name: res.name, reason: res.reason, venue: res.venue || VENUE_OPTIONS[0],
+                    id: res.id, name: res.name, reason: res.reason, venue: res.venue || CLASS_OPTIONS[0],
                     startDate: res.startDate, endDate: res.endDate, startAmpm: res.startAmpm, startHour: res.startHour,
                     endAmpm: res.endAmpm, endHour: res.endHour, pin: res.pin || ''
                 });
@@ -484,7 +500,7 @@
                     icsContent += "BEGIN:VEVENT\r\n";
                     icsContent += `SUMMARY:【${res.venue}】${res.name} - ${res.reason}\r\n`;
                     icsContent += `DTSTART:${startDt}\r\nDTEND:${endDt}\r\n`;
-                    icsContent += `DESCRIPTION:預約人：${res.name}\\n事由：${res.reason}\\n場地：${res.venue}\r\n`;
+                    icsContent += `DESCRIPTION:預約人：${res.name}\\n事由：${res.reason}\\n班級：${res.venue}\r\n`;
                     icsContent += "END:VEVENT\r\n";
                 });
                 icsContent += "END:VCALENDAR";
@@ -499,7 +515,7 @@
             const exportToExcel = () => {
                 if (reservations.length === 0) return showAlert('目前還沒有任何預約資料可以匯出喔！');
                 const sortedReservations = [...reservations].sort((a, b) => (a.startDate + a.startTime).localeCompare(b.startDate + b.startTime));
-                let csvContent = '\uFEFF開始日期,開始時間,結束日期,結束時間,場地,預約人,預約事由\n';
+                let csvContent = '\uFEFF開始日期,開始時間,結束日期,結束時間,班級,預約人,預約事由\n';
                 sortedReservations.forEach(res => {
                     const safeName = `"${res.name.replace(/"/g, '""')}"`;
                     const safeReason = `"${res.reason.replace(/"/g, '""')}"`;
@@ -553,11 +569,28 @@
                         </h1>
                     </div>
 
-                    <div className="max-w-4xl mx-auto mb-6 flex justify-end items-center gap-2 px-4">
-                        <label className="font-bold text-slate-600">⚙️ 系統設定：每個場地同時段最高預約數</label>
-                        <select value={maxCapacity} onChange={(e) => setMaxCapacity(Number(e.target.value))} className="sketchy-border-sm px-2 py-1 bg-white font-bold text-slate-800 outline-none">
-                            {[1, 2, 3, 4, 5, 10].map(num => <option key={num} value={num}>{num} 筆預約</option>)}
-                        </select>
+                    <div className="max-w-4xl mx-auto mb-6 flex flex-col md:flex-row justify-end items-center gap-3 px-4">
+                        <label className="font-bold text-slate-600">⚙️ 系統設定：每個班級同時段最高預約數</label>
+                        <div className="flex items-center gap-2">
+                            <select 
+                                value={maxCapacity} 
+                                onChange={(e) => {
+                                    setMaxCapacity(Number(e.target.value));
+                                    localStorage.setItem('max_capacity', e.target.value);
+                                }} 
+                                disabled={isCapacityLocked}
+                                className={`sketchy-border-sm px-2 py-1 font-bold outline-none ${isCapacityLocked ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : 'bg-white text-slate-800'}`}
+                            >
+                                {[1, 2, 3, 4, 5, 10].map(num => <option key={num} value={num}>{num} 筆預約</option>)}
+                            </select>
+                            <button 
+                                onClick={handleLockToggle}
+                                type="button"
+                                className={`sketchy-btn sketchy-border-sm px-3 py-1 font-bold text-sm transition-colors ${isCapacityLocked ? 'bg-slate-200 text-slate-600' : 'bg-red-100 text-red-700'}`}
+                            >
+                                {isCapacityLocked ? '🔒 解鎖' : '🔓 鎖定'}
+                            </button>
+                        </div>
                     </div>
 
                     <div className="sketchy-border p-6 md:p-8 max-w-4xl mx-auto relative bg-white">
@@ -581,13 +614,14 @@
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-6 bg-slate-50 p-4 rounded-xl border-2 border-dashed border-slate-300">
                                 <div className="space-y-4 md:col-span-1">
                                     <div>
-                                        <label className="block text-lg font-bold mb-1 text-blue-700">選擇場地</label>
+                                        <label className="block text-lg font-bold mb-1 text-blue-700">選擇班級</label>
                                         <select name="venue" value={formData.venue} onChange={handleInputChange} className="sketchy-border-sm w-full px-3 py-2 bg-white">
-                                            {VENUE_OPTIONS.map(v => <option key={v} value={v}>{v}</option>)}
+                                            {CLASS_OPTIONS.map(v => <option key={v} value={v}>{v}</option>)}
+                                            <option value="全部">🌈 全部班級</option>
                                         </select>
                                     </div>
                                     <div className="p-3 bg-blue-50 text-blue-800 text-sm rounded-lg sketchy-border-sm mt-4 hidden md:block">
-                                        💡 提示：<br/>時間以<b>小時</b>為單位。<br/>同一個場地同時段最多接受 <b>{maxCapacity}</b> 筆預約唷！
+                                        💡 提示：<br/>時間以<b>小時</b>為單位。<br/>同一個班級同時段最多接受 <b>{maxCapacity}</b> 筆預約唷！
                                     </div>
                                 </div>
                                 <div className="space-y-4 md:col-span-1">
@@ -637,13 +671,25 @@
                             </div>
                         </div>
 
+                        {/* 顯示目前的過濾狀態 */}
+                        <div className="text-center mb-4">
+                            <span className="bg-slate-800 text-white px-4 py-1 sketchy-border-sm text-lg font-bold shadow-sm">
+                                📍 目前顯示：{formData.venue === '全部' ? '🌈 所有班級的預約' : `【${formData.venue}】專屬預約`}
+                            </span>
+                        </div>
+
                         <div className="calendar-grid bg-white shadow-lg">
                             <div className="grid grid-cols-7 bg-slate-800 text-white border-b-4 border-slate-800">
                                 {['日', '一', '二', '三', '四', '五', '六'].map(day => <div key={day} className="py-3 text-center font-bold text-xl border-r border-slate-700 last:border-r-0">星期{day}</div>)}
                             </div>
                             <div className="grid grid-cols-7 bg-white">
                                 {calendarDays.map((dayObj, index) => {
-                                    const dayReservations = reservations.filter(res => isReservationOnDate(res, dayObj.date)).sort((a, b) => a.startTime.localeCompare(b.startTime));
+                                    // 【核心修改】日曆現在會根據上面選單選擇的「班級」來進行過濾顯示
+                                    const dayReservations = reservations
+                                        .filter(res => isReservationOnDate(res, dayObj.date))
+                                        .filter(res => formData.venue === '全部' ? true : res.venue === formData.venue)
+                                        .sort((a, b) => a.startTime.localeCompare(b.startTime));
+                                        
                                     const isToday = formatDate(dayObj.date) === formatDate(new Date());
                                     return (
                                         <div key={index} className={`calendar-cell p-1 md:p-2 ${dayObj.isCurrentMonth ? '' : 'bg-gray-100 text-gray-400'} ${isToday ? 'bg-yellow-50' : ''}`}>
@@ -701,7 +747,7 @@
                                         if (dialog.type === 'pin') {
                                             if (String(pinInput) === String(dialog.expectedPin) || String(pinInput) === "8888") {
                                                 if (dialog.onConfirm) dialog.onConfirm(); setDialog({ ...dialog, isOpen: false });
-                                            } else { setDialog({ isOpen: true, message: '❌ 確認碼錯誤！\n請重新確認後再試。', type: 'alert', onConfirm: null }); }
+                                            } else { setDialog({ isOpen: true, message: '❌ 密碼錯誤！\n請重新確認後再試。', type: 'alert', onConfirm: null }); }
                                         } else {
                                             if (dialog.onConfirm) dialog.onConfirm(); setDialog({ ...dialog, isOpen: false });
                                         }
