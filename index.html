@@ -14,6 +14,11 @@
     
     <!-- 引入 Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- 改用 Firebase Compat CDN，解決 GitHub Pages 上的白畫面衝突 -->
+    <script src="https://www.gstatic.com/firebasejs/10.10.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.10.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.10.0/firebase-firestore-compat.js"></script>
     
     <!-- 引入 Google Fonts: Kalam (手寫風) -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -101,15 +106,10 @@
 
     <div id="root" class="max-w-5xl mx-auto"></div>
 
-    <!-- 加上 data-type="module" 啟用 ES6 模組載入 Firebase -->
-    <script type="text/babel" data-type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
+    <script type="text/babel">
         const { useState, useEffect, useMemo } = React;
 
-        // --- Firebase 初始化 (使用您的專屬金鑰) ---
+        // --- Firebase 初始化 ---
         const firebaseConfig = {
             apiKey: "AIzaSyB9zuKL8Gbd_qYhyeqwpzCRG20VN2qrjns",
             authDomain: "gemini-db-3e10f.firebaseapp.com",
@@ -120,11 +120,15 @@
             measurementId: "G-FP4EL2V8PG"
         };
         
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-        // 設定雲端資料庫中的集合名稱 (Collection)
-        const dbCollection = collection(db, 'reservations');
+        if (!firebase.apps.length) {
+            firebase.initializeApp(firebaseConfig);
+        }
+        
+        const auth = firebase.auth();
+        const db = firebase.firestore();
+        const dbCollection = db.collection('reservations');
+
+        const LOCAL_STORAGE_KEY = 'my_standalone_reservations'; // 單機模式儲存鍵值
 
         // --- 工具函數區 ---
         const pastelColors = [
@@ -188,8 +192,9 @@
             const [reservations, setReservations] = useState([]);
             const [currentDate, setCurrentDate] = useState(new Date());
             const [maxCapacity, setMaxCapacity] = useState(3);
+            const [useLocalMode, setUseLocalMode] = useState(false); // 核心：是否降級為單機模式
             
-            // 自訂 Dialog 狀態 (提早宣告以便 useEffect 可以使用 showAlert)
+            // 自訂 Dialog 狀態
             const [dialog, setDialog] = useState({ isOpen: false, message: '', type: 'alert', onConfirm: null, expectedPin: '', pinToCopy: '', warning: '' });
             const [pinInput, setPinInput] = useState('');
             const [isCopied, setIsCopied] = useState(false);
@@ -206,39 +211,68 @@
                 setDialog({ isOpen: true, message, type: 'pin', expectedPin, onConfirm });
             };
 
-            // --- Firebase 匿名登入與即時連線監聽 ---
+            // 將資料存入本機儲存空間 (降級模式用)
+            const saveToLocalDatabase = (newReservations) => {
+                setReservations(newReservations);
+                localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(newReservations));
+            };
+
+            // 處理 Firebase 錯誤的智慧防護網
+            const handleFirebaseError = (error, actionName) => {
+                console.warn(`Firebase ${actionName}錯誤 (已自動切換單機模式):`, error);
+                
+                // 只要出錯，立刻強制切換為單機模式，確保系統可用
+                setUseLocalMode(true); 
+
+                // 嘗試從本地載入先前存的資料，以免畫面變空白
+                try {
+                    const savedData = localStorage.getItem(LOCAL_STORAGE_KEY);
+                    if (savedData) setReservations(JSON.parse(savedData));
+                } catch (e) {}
+
+                if (error.code === 'permission-denied') {
+                    if (error.message && error.message.includes('has not been used')) {
+                        showAlert(`⚠️ 找不到雲端資料庫！\n\n系統發現您的 Firebase 專案尚未啟用 Firestore。\n系統已自動為您切換為「單機離線模式」，您仍可繼續測試預約功能！\n\n👉 若要啟用雲端連線：\n請前往 Firebase Console 的 Firestore Database，點擊「建立資料庫 (以測試模式開始)」。`);
+                    } else {
+                        showAlert(`⚠️ 雲端資料庫權限不足！\n\n系統已自動為您切換為「單機離線模式」。\n\n👉 若要啟用雲端，請將 Firestore Rules 修改為：\nallow read, write: if true;`);
+                    }
+                } else if (error.code === 'auth/configuration-not-found' || error.code === 'auth/operation-not-allowed') {
+                    showAlert('⚠️ Firebase 登入設定提醒：\n\n專案尚未啟用「匿名登入」。\n系統已自動切換為「單機離線模式」。\n👉 若要啟用雲端，請至 Firebase Authentication 開啟「匿名 (Anonymous)」。');
+                } else {
+                    showAlert(`⚠️ 雲端連線失敗 (${actionName})。\n\n系統已自動為您切換為「單機離線模式」，資料將暫時儲存於您的瀏覽器中。`);
+                }
+            };
+
+            // --- 初始載入與 Firebase 連線 ---
             useEffect(() => {
+                // 先試著載入本機資料當作保底
+                try {
+                    const savedData = localStorage.getItem(LOCAL_STORAGE_KEY);
+                    if (savedData) setReservations(JSON.parse(savedData));
+                } catch (e) {}
+
                 const authenticate = async () => {
                     try {
-                        // 執行匿名登入，讓網頁有權限存取 Firebase
-                        await signInAnonymously(auth);
+                        await auth.signInAnonymously();
                     } catch (error) {
-                        // 改用 console.warn 避免觸發外部環境的強制當機畫面
-                        console.warn("登入失敗提示:", error);
-                        if (error.code === 'auth/configuration-not-found') {
-                            showAlert('⚠️ Firebase 登入設定提醒：\n\n系統發現您的 Firebase 專案尚未啟用「匿名登入」。\n請前往 Firebase Console 的 Authentication (驗證) > Sign-in method (登入方式) 中，開啟「匿名 (Anonymous)」。\n\n(目前系統將嘗試以未登入狀態存取資料)');
-                        }
+                        handleFirebaseError(error, "登入驗證");
                     }
                 };
-                
                 authenticate();
             }, []);
 
             useEffect(() => {
-                // 即時監聽雲端資料庫的變更
-                const unsubscribeDB = onSnapshot(dbCollection, (snapshot) => {
+                if (useLocalMode) return; // 如果已經是單機模式，就不監聽雲端了
+
+                const unsubscribeDB = dbCollection.onSnapshot((snapshot) => {
                     const loadedReservations = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     setReservations(loadedReservations);
                 }, (error) => {
-                    // 改用 console.warn 避免觸發外部環境的強制當機畫面
-                    console.warn("無法取得預約資料提示:", error);
-                    if (error.code === 'permission-denied') {
-                        showAlert('⚠️ 資料庫權限不足 (無法讀取)：\n\n請前往 Firebase Console 的 Firestore Database > Rules (規則) 分頁。\n\n請暫時將規則修改為：\nallow read, write: if true;');
-                    }
+                    handleFirebaseError(error, "讀取雲端資料");
                 });
                 
                 return () => unsubscribeDB();
-            }, []);
+            }, [useLocalMode]);
 
             // 表單狀態
             const [formData, setFormData] = useState({
@@ -317,25 +351,21 @@
                     pin: currentPin
                 };
 
-                if (isEditing) {
-                    // 更新至 Firebase 雲端資料庫
-                    newReservationData.id = formData.id;
-                    const docRef = doc(dbCollection, formData.id);
-                    setDoc(docRef, newReservationData).then(() => {
+                if (useLocalMode) {
+                    // --- 單機離線模式儲存邏輯 ---
+                    let updatedReservations;
+                    if (isEditing) {
+                        newReservationData.id = formData.id;
+                        updatedReservations = reservations.map(res => res.id === formData.id ? newReservationData : res);
+                        saveToLocalDatabase(updatedReservations);
                         setIsEditing(false);
-                        showAlert('🎉 預約資料已成功更新！');
-                    }).catch(err => {
-                        console.warn("更新失敗提示:", err);
-                        if (err.code === 'permission-denied') showAlert('⚠️ 更新失敗 (權限不足)！\n請檢查 Firebase Firestore 的 Rules (規則) 設定。');
-                        else showAlert('⚠️ 更新失敗，請檢查網路連線。');
-                    });
-                } else {
-                    // 新增至 Firebase 雲端資料庫
-                    const newId = Date.now().toString();
-                    newReservationData.id = newId;
-                    const docRef = doc(dbCollection, newId);
-                    setDoc(docRef, newReservationData).then(() => {
-                        // 依然將確認碼記憶在該使用者的本機瀏覽器中，方便日後修改
+                        showAlert('🎉 預約資料已成功更新！(單機模式)');
+                    } else {
+                        const newId = Date.now().toString();
+                        newReservationData.id = newId;
+                        updatedReservations = [...reservations, newReservationData];
+                        saveToLocalDatabase(updatedReservations);
+                        
                         try {
                             const savedPins = JSON.parse(localStorage.getItem('my_reservation_pins') || '{}');
                             savedPins[newId] = currentPin;
@@ -346,11 +376,42 @@
                             isOpen: true, type: 'show-pin', message: '您的專屬確認碼為：',
                             pinToCopy: currentPin, warning: '⚠️ 日後若要修改或刪除此預約，將需要輸入此確認碼，請務必妥善記下喔！', onConfirm: null
                         });
-                    }).catch(err => {
-                        console.warn("新增失敗提示:", err);
-                        if (err.code === 'permission-denied') showAlert('⚠️ 新增失敗 (權限不足)！\n請前往 Firebase Console 將 Firestore 規則設為\nallow read, write: if true;');
-                        else showAlert('⚠️ 新增失敗，請檢查網路連線。');
-                    });
+                    }
+                } else {
+                    // --- 雲端 Firebase 儲存邏輯 ---
+                    if (isEditing) {
+                        newReservationData.id = formData.id;
+                        dbCollection.doc(formData.id).set(newReservationData).then(() => {
+                            setIsEditing(false);
+                            showAlert('🎉 預約資料已成功更新！');
+                        }).catch(err => {
+                            handleFirebaseError(err, "雲端更新");
+                            // 失敗時自動轉為本機儲存保底
+                            const updated = reservations.map(res => res.id === formData.id ? newReservationData : res);
+                            saveToLocalDatabase(updated);
+                            setIsEditing(false);
+                        });
+                    } else {
+                        const newId = Date.now().toString();
+                        newReservationData.id = newId;
+                        dbCollection.doc(newId).set(newReservationData).then(() => {
+                            try {
+                                const savedPins = JSON.parse(localStorage.getItem('my_reservation_pins') || '{}');
+                                savedPins[newId] = currentPin;
+                                localStorage.setItem('my_reservation_pins', JSON.stringify(savedPins));
+                            } catch (e) {}
+
+                            setDialog({
+                                isOpen: true, type: 'show-pin', message: '您的專屬確認碼為：',
+                                pinToCopy: currentPin, warning: '⚠️ 日後若要修改或刪除此預約，將需要輸入此確認碼，請務必妥善記下喔！', onConfirm: null
+                            });
+                        }).catch(err => {
+                            handleFirebaseError(err, "雲端新增");
+                            // 失敗時自動轉為本機儲存保底
+                            const updated = [...reservations, newReservationData];
+                            saveToLocalDatabase(updated);
+                        });
+                    }
                 }
 
                 setFormData(prev => ({
@@ -387,25 +448,30 @@
                 e.stopPropagation();
                 if (!res.pin) {
                     showConfirm('確定要擦掉這個預約嗎？', () => {
-                        // 從 Firebase 刪除舊資料
-                        deleteDoc(doc(dbCollection, res.id)).then(() => {
+                        if (useLocalMode) {
+                            const updated = reservations.filter(r => r.id !== res.id);
+                            saveToLocalDatabase(updated);
                             if (formData.id === res.id) handleCancelEdit();
-                        }).catch(err => {
-                            console.warn("刪除失敗提示:", err);
-                            if (err.code === 'permission-denied') showAlert('⚠️ 刪除失敗 (權限不足)！\n請檢查 Firebase Firestore 的 Rules 設定。');
-                        });
+                        } else {
+                            dbCollection.doc(res.id).delete().then(() => {
+                                if (formData.id === res.id) handleCancelEdit();
+                            }).catch(err => handleFirebaseError(err, "雲端刪除"));
+                        }
                     });
                     return;
                 }
                 showPinPrompt(`請輸入確認碼以刪除【${res.name}】的預約：`, res.pin, () => {
-                    // 從 Firebase 刪除資料
-                    deleteDoc(doc(dbCollection, res.id)).then(() => {
+                    if (useLocalMode) {
+                        const updated = reservations.filter(r => r.id !== res.id);
+                        saveToLocalDatabase(updated);
                         if (formData.id === res.id) handleCancelEdit();
-                        showAlert('🗑️ 預約已成功刪除！');
-                    }).catch(err => {
-                        console.warn("刪除失敗提示:", err);
-                        if (err.code === 'permission-denied') showAlert('⚠️ 刪除失敗 (權限不足)！\n請檢查 Firebase Firestore 的 Rules 設定。');
-                    });
+                        showAlert('🗑️ 預約已成功刪除！(單機模式)');
+                    } else {
+                        dbCollection.doc(res.id).delete().then(() => {
+                            if (formData.id === res.id) handleCancelEdit();
+                            showAlert('🗑️ 預約已成功刪除！');
+                        }).catch(err => handleFirebaseError(err, "雲端刪除"));
+                    }
                 }, res.id);
             };
 
@@ -471,6 +537,15 @@
 
             return (
                 <div className="space-y-8 pb-12">
+                    {/* 離線單機模式的頂部警告橫幅 */}
+                    {useLocalMode && (
+                        <div className="bg-yellow-50 border-b-4 border-yellow-400 p-3 md:p-4 text-center sketchy-border-sm mx-4 mt-4 shadow-sm relative overflow-hidden">
+                            <div className="absolute top-0 left-0 w-full h-full bg-[radial-gradient(#fbbf24_1px,transparent_1px)] [background-size:16px_16px] opacity-10 pointer-events-none"></div>
+                            <h3 className="text-xl md:text-2xl font-bold text-yellow-800 mb-1">⚠️ 目前為「單機離線模式」</h3>
+                            <p className="text-yellow-700 font-medium text-sm md:text-base">因雲端資料庫尚未完全啟用，資料暫存於您的裝置中。<br className="hidden md:block"/>請前往 Firebase Console 點擊「建立資料庫」後，重新整理網頁即可恢復雲端連線喔！</p>
+                        </div>
+                    )}
+
                     <div className="text-center mt-6 mb-8">
                         <h1 className="text-4xl md:text-5xl font-bold text-slate-800 tracking-wider inline-block relative">
                             行程預約白板
