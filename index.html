@@ -1,0 +1,1989 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>手繪白板風 - 行程預約系統</title>
+    
+    <!-- 引入 React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- 引入 Babel 讓瀏覽器解析 JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- 引入 Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- 引入 Google Fonts: Kalam (手寫風) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Kalam:wght@300;400;700&display=swap" rel="stylesheet">
+
+    <style>
+        /* 手繪白板風自訂樣式 */
+        body {
+            font-family: 'Kalam', cursive, sans-serif;
+            background-color: #f0f0f0; /* 淡淡的灰底，襯托白板 */
+            background-image: radial-gradient(#d1d1d1 1px, transparent 1px); /* 網點背景增加質感 */
+            background-size: 20px 20px;
+            color: #333;
+        }
+
+        /* 核心的手繪不規則邊框 */
+        .sketchy-border {
+            border: 3px solid #2c3e50;
+            border-radius: 255px 15px 225px 15px/15px 225px 15px 255px;
+            background-color: white;
+            box-shadow: 4px 4px 0px rgba(0,0,0,0.1);
+            transition: all 0.2s ease;
+        }
+
+        .sketchy-border-sm {
+            border: 2px solid #2c3e50;
+            border-radius: 15px 225px 15px 255px/255px 15px 225px 15px;
+            background-color: white;
+        }
+
+        /* 輸入框特化 */
+        input, select {
+            font-family: 'Kalam', cursive, sans-serif;
+            font-size: 1.1rem;
+            outline: none;
+            background-color: transparent;
+        }
+        
+        input:focus {
+            background-color: #fdfbf7;
+        }
+
+        /* 按鈕 hover 效果：線條稍微改變感覺像重新畫過 */
+        .sketchy-btn:hover {
+            transform: translate(-2px, -2px);
+            box-shadow: 6px 6px 0px rgba(0,0,0,0.15);
+            border-radius: 15px 255px 15px 225px/225px 15px 255px 15px;
+        }
+        
+        .sketchy-btn:active {
+            transform: translate(2px, 2px);
+            box-shadow: 1px 1px 0px rgba(0,0,0,0.1);
+        }
+
+        /* 日曆網格的邊框 */
+        .calendar-cell {
+            border-right: 2px solid #e2e8f0;
+            border-bottom: 2px solid #e2e8f0;
+            min-height: 100px;
+        }
+        /* 讓日曆看起來像手繪格子 */
+        .calendar-grid {
+            border: 3px solid #2c3e50;
+            border-radius: 20px 10px 30px 15px/15px 30px 10px 20px;
+            overflow: hidden;
+            background: white;
+        }
+
+        /* 預約便利貼 */
+        .reservation-note {
+            border: 1px solid rgba(0,0,0,0.2);
+            border-radius: 2px 15px 5px 10px/10px 5px 15px 2px;
+            box-shadow: 2px 2px 3px rgba(0,0,0,0.05);
+            cursor: pointer;
+            transition: transform 0.1s;
+        }
+        .reservation-note:hover {
+            transform: scale(1.02) rotate(-1deg);
+            z-index: 10;
+        }
+        
+        /* 隱藏預設的日期/時間圖示，讓畫面更乾淨 */
+        input[type="date"]::-webkit-calendar-picker-indicator,
+        input[type="time"]::-webkit-calendar-picker-indicator {
+            filter: invert(0.5); /* 讓圖示不那麼突兀 */
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <div id="root" class="max-w-5xl mx-auto"></div>
+
+    <script type="text/babel" data-type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const { useState, useEffect, useMemo } = React;
+
+        // 粉彩顏色庫，用於不同使用者
+        const pastelColors = [
+            '#FFB3BA', '#FFDFBA', '#FFFFBA', '#BAFFC9', '#BAE1FF', 
+            '#E8BAFF', '#FFBAFF', '#D4F0F0', '#F3E8FF', '#FEE2E2'
+        ];
+
+        // 簡單的 Hash 函數，確保同一個名字獲得相同的顏色
+        const getColorForName = (name) => {
+            if (!name) return '#ffffff';
+            let hash = 0;
+            for (let i = 0; i < name.length; i++) {
+                hash = name.charCodeAt(i) + ((hash << 5) - hash);
+            }
+            return pastelColors[Math.abs(hash) % pastelColors.length];
+        };
+
+        // 格式化日期為 YYYY-MM-DD
+        const formatDate = (date) => {
+            const d = new Date(date);
+            let month = '' + (d.getMonth() + 1);
+            let day = '' + d.getDate();
+            const year = d.getFullYear();
+
+            if (month.length < 2) month = '0' + month;
+            if (day.length < 2) day = '0' + day;
+
+            return [year, month, day].join('-');
+        };
+
+        // 將 上/下午 + 時 轉換成 24小時制字串 (因應純小時制，移除分鐘)
+        const get24HTime = (ampm, h) => {
+            let hour = parseInt(h, 10);
+            
+            // 修正台灣常見的直覺時間認知：
+            // 大家直覺「上午 12 時」是指「中午 12 點 (12:00)」
+            // 「下午 12 時」是指「半夜 12 點 (24:00)」
+            if (ampm === 'AM' && hour === 12) {
+                hour = 12;
+            } else if (ampm === 'PM' && hour === 12) {
+                hour = 24;
+            } else if (ampm === 'PM') {
+                hour += 12;
+            }
+
+            return `${hour.toString().padStart(2, '0')}:00`;
+        };
+
+        // 將日期與時間字串轉為 Date 物件
+        const parseToDate = (dateStr, timeStr) => {
+            const [y, m, d] = dateStr.split('-').map(Number);
+            const [h, min] = timeStr.split(':').map(Number);
+            return new Date(y, m - 1, d, h, min);
+        };
+
+        // 計算區間內涵蓋的所有「小時」時段 (例如回傳: ["2026-04-15 09:00", "2026-04-15 10:00"])
+        const getRequestedSlots = (startDate, startTime, endDate, endTime) => {
+            const slots = [];
+            let current = parseToDate(startDate, startTime);
+            const end = parseToDate(endDate, endTime);
+            
+            while (current < end) {
+                const y = current.getFullYear();
+                const m = String(current.getMonth() + 1).padStart(2, '0');
+                const d = String(current.getDate()).padStart(2, '0');
+                const h = String(current.getHours()).padStart(2, '0');
+                slots.push(`${y}-${m}-${d} ${h}:00`);
+                current = new Date(current.getTime() + 60 * 60 * 1000); // 增加一小時
+            }
+            return slots;
+        };
+
+        // 預設場地選項
+        const VENUE_OPTIONS = ['A會議室', 'B會議室', 'C展演廳', '戶外廣場'];
+
+        // --- Firebase Setup ---
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const collectionName = 'reservations';
+
+        const App = () => {
+            // 狀態管理
+            const [user, setUser] = useState(null);
+            const [reservations, setReservations] = useState([]);
+            const [currentDate, setCurrentDate] = useState(new Date());
+            
+            // 系統設定狀態：同一個時段可以預約數量 (預設3個)
+            const [maxCapacity, setMaxCapacity] = useState(3);
+            
+            // --- Firebase Auth & 雲端資料同步 ---
+            useEffect(() => {
+                const initAuth = async () => {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                };
+                initAuth();
+                const unsubscribe = onAuthStateChanged(auth, setUser);
+                return () => unsubscribe();
+            }, []);
+
+            useEffect(() => {
+                if (!user) return; // 確認有權限才撈取資料
+                
+                const publicCollectionRef = collection(db, 'artifacts', appId, 'public', 'data', collectionName);
+                
+                // onSnapshot 會自動保持資料即時同步
+                const unsubscribe = onSnapshot(publicCollectionRef, (snapshot) => {
+                    const loadedReservations = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    setReservations(loadedReservations);
+                }, (error) => {
+                    console.error("無法取得預約資料:", error);
+                });
+                
+                return () => unsubscribe();
+            }, [user]);
+
+            // 自訂 Dialog 狀態 (加入 pinPrompt 支援與 pinInput)
+            const [dialog, setDialog] = useState({ isOpen: false, message: '', type: 'alert', onConfirm: null, expectedPin: '', pinToCopy: '', warning: '' });
+            const [pinInput, setPinInput] = useState('');
+            const [isCopied, setIsCopied] = useState(false); // 用於記錄是否已點擊複製
+
+            const showAlert = (message) => setDialog({ isOpen: true, message, type: 'alert', onConfirm: null });
+            const showConfirm = (message, onConfirm) => setDialog({ isOpen: true, message, type: 'confirm', onConfirm });
+            // 修改 prompt 以支援讀取本機記憶的密碼
+            const showPinPrompt = (message, expectedPin, onConfirm, resId) => {
+                let autoPin = '';
+                try {
+                    // 嘗試從瀏覽器 Local Storage 找回這筆預約的密碼
+                    const savedPins = JSON.parse(localStorage.getItem('my_reservation_pins') || '{}');
+                    if (savedPins[resId]) {
+                        autoPin = savedPins[resId];
+                    }
+                } catch (e) { console.error('讀取記憶密碼失敗', e); }
+                
+                setPinInput(autoPin); // 若有找到，自動幫使用者帶入
+                setDialog({ isOpen: true, message, type: 'pin', expectedPin, onConfirm });
+            };
+
+            // 表單狀態
+            const [formData, setFormData] = useState({
+                id: null,
+                name: '',
+                reason: '',
+                venue: VENUE_OPTIONS[0],
+                startDate: formatDate(new Date()),
+                endDate: formatDate(new Date()),
+                startAmpm: 'AM',
+                startHour: '09',
+                endAmpm: 'AM',
+                endHour: '10',
+                pin: '' // 新增存放此筆預約的確認碼
+            });
+
+            const [isEditing, setIsEditing] = useState(false);
+
+            // 處理表單輸入改變
+            const handleInputChange = (e) => {
+                const { name, value } = e.target;
+                setFormData(prev => {
+                    const newData = { ...prev, [name]: value };
+                    
+                    // 連動功能 1：當「開始日期」改變時，直接讓「結束日期」同步更新到同一天，省去重複選擇
+                    if (name === 'startDate') {
+                        newData.endDate = value;
+                    }
+                    
+                    // 連動功能 2：當「開始時間的上下午」改變時，連動更新「結束時間的上下午」
+                    if (name === 'startAmpm') {
+                        newData.endAmpm = value;
+                    }
+
+                    return newData;
+                });
+            };
+
+            // 複製文字到剪貼簿 (相容於 iframe 限制的寫法)
+            const copyToClipboard = (text) => {
+                const textArea = document.createElement("textarea");
+                textArea.value = text;
+                document.body.appendChild(textArea);
+                textArea.select();
+                try {
+                    document.execCommand('copy');
+                } catch (err) {
+                    console.error('複製失敗', err);
+                }
+                document.body.removeChild(textArea);
+            };
+
+            // 送出表單 (新增或修改)
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                
+                if (!formData.name.trim()) {
+                    showAlert('請輸入名字喔！');
+                    return;
+                }
+
+                if (!formData.reason.trim()) {
+                    showAlert('請輸入預約事由喔！');
+                    return;
+                }
+
+                if (formData.startDate > formData.endDate) {
+                    showAlert('開始日期不能晚於結束日期喔！');
+                    return;
+                }
+
+                const startTime24 = get24HTime(formData.startAmpm, formData.startHour);
+                const endTime24 = get24HTime(formData.endAmpm, formData.endHour);
+
+                if (formData.startDate === formData.endDate && startTime24 >= endTime24) {
+                    showAlert('同一天的話，結束時間要晚於開始時間喔！');
+                    return;
+                }
+
+                // --- 驗證：場地衝突 & 總預約數量上限 ---
+                const reqSlots = getRequestedSlots(formData.startDate, startTime24, formData.endDate, endTime24);
+                
+                for (const slot of reqSlots) {
+                    let venueOverlappingCount = 0;
+
+                    for (const res of reservations) {
+                        // 編輯時，排除自己本身的舊資料
+                        if (isEditing && res.id === formData.id) continue;
+
+                        const resSlots = getRequestedSlots(res.startDate, res.startTime, res.endDate, res.endTime);
+                        // 只計算「同一個場地」在「同一個時段」的預約數量
+                        if (resSlots.includes(slot) && res.venue === formData.venue) {
+                            venueOverlappingCount++;
+                        }
+                    }
+
+                    // 只有當同一個場地超過最高預約數時，才阻擋申請
+                    if (venueOverlappingCount >= maxCapacity) {
+                        showAlert(`Oops！【${formData.venue}】在 ${slot} 的預約已達上限（${maxCapacity}筆）！請選擇其他場地或時段。`);
+                        return;
+                    }
+                }
+
+                // 產生 4 碼確認碼 (若是新增預約)
+                let currentPin = formData.pin;
+                if (!isEditing) {
+                    currentPin = Math.floor(1000 + Math.random() * 9000).toString();
+                }
+
+                const newReservationData = {
+                    ...formData,
+                    startTime: startTime24,
+                    endTime: endTime24,
+                    color: getColorForName(formData.name),
+                    pin: currentPin // 綁定確認碼存入雲端
+                };
+
+                const publicCollectionRef = collection(db, 'artifacts', appId, 'public', 'data', collectionName);
+
+                if (isEditing) {
+                    // 修改現有預約 (存入雲端)
+                    newReservationData.id = formData.id;
+                    const docRef = doc(publicCollectionRef, formData.id);
+                    setDoc(docRef, newReservationData).catch(err => console.error(err));
+                    setIsEditing(false);
+                    showAlert('🎉 預約資料已成功更新！');
+                } else {
+                    // 新增預約 (存入雲端)
+                    const newId = Date.now().toString();
+                    newReservationData.id = newId;
+                    const docRef = doc(publicCollectionRef, newId);
+                    setDoc(docRef, newReservationData).catch(err => console.error(err));
+                    
+                    // --- 新增：將確認碼記憶在當前瀏覽器中 ---
+                    try {
+                        const savedPins = JSON.parse(localStorage.getItem('my_reservation_pins') || '{}');
+                        savedPins[newId] = currentPin;
+                        localStorage.setItem('my_reservation_pins', JSON.stringify(savedPins));
+                    } catch (e) { console.error('儲存記憶密碼失敗', e); }
+
+                    // 顯示帶有複製按鈕的專屬成功畫面給使用者
+                    setDialog({
+                        isOpen: true,
+                        type: 'show-pin',
+                        message: '您的專屬確認碼為：',
+                        pinToCopy: currentPin,
+                        warning: '⚠️ 日後若要修改或刪除此預約，將需要輸入此確認碼，請務必妥善記下喔！',
+                        onConfirm: null
+                    });
+                }
+
+                // 清空表單 (保留日期方便連續輸入)
+                setFormData(prev => ({
+                    ...prev,
+                    id: null,
+                    name: '',
+                    reason: '',
+                    venue: VENUE_OPTIONS[0],
+                    startAmpm: 'AM',
+                    startHour: '09',
+                    endAmpm: 'AM',
+                    endHour: '10',
+                    pin: ''
+                }));
+            };
+
+            // 取消編輯
+            const handleCancelEdit = () => {
+                setIsEditing(false);
+                setFormData({
+                    id: null,
+                    name: '',
+                    reason: '',
+                    venue: VENUE_OPTIONS[0],
+                    startDate: formatDate(new Date()),
+                    endDate: formatDate(new Date()),
+                    startAmpm: 'AM',
+                    startHour: '09',
+                    endAmpm: 'AM',
+                    endHour: '10',
+                    pin: ''
+                });
+            };
+
+            // 點擊日曆上的預約項目進行編輯 (此處單純載入資料，攔截邏輯移至 handlePinForEdit)
+            const handleEditClick = (res) => {
+                setFormData({
+                    id: res.id,
+                    name: res.name,
+                    reason: res.reason,
+                    venue: res.venue || VENUE_OPTIONS[0],
+                    startDate: res.startDate,
+                    endDate: res.endDate,
+                    startAmpm: res.startAmpm,
+                    startHour: res.startHour,
+                    endAmpm: res.endAmpm,
+                    endHour: res.endHour,
+                    pin: res.pin || ''
+                });
+                setIsEditing(true);
+                // 滾動到頂部方便編輯
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+            };
+
+            // 身分驗證：修改前確認
+            const handlePinForEdit = (res) => {
+                // 如果是舊資料(無密碼)防呆，直接允許修改
+                if (!res.pin) {
+                    handleEditClick(res);
+                    return;
+                }
+                showPinPrompt(`請輸入確認碼以修改【${res.name}】的預約：`, res.pin, () => {
+                    handleEditClick(res);
+                }, res.id); // 傳入 res.id 以供尋找記憶密碼
+            };
+
+            // 身分驗證：刪除前確認
+            const handlePinForDelete = (res, e) => {
+                e.stopPropagation(); // 阻止觸發編輯的點擊事件
+                
+                // 舊資料防呆處理
+                if (!res.pin) {
+                    showConfirm('確定要擦掉這個預約嗎？', () => {
+                        const docRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'reservations'), res.id);
+                        deleteDoc(docRef).catch(err => console.error(err));
+                        if (formData.id === res.id) handleCancelEdit();
+                    });
+                    return;
+                }
+
+                showPinPrompt(`請輸入確認碼以刪除【${res.name}】的預約：`, res.pin, () => {
+                    const docRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'reservations'), res.id);
+                    deleteDoc(docRef).catch(err => console.error(err));
+                    if (formData.id === res.id) handleCancelEdit();
+                    showAlert('🗑️ 預約已成功刪除！');
+                }, res.id); // 傳入 res.id 以供尋找記憶密碼
+            };
+
+            // 匯出成 .ics 檔案供 Google 日曆匯入
+            const exportToICS = () => {
+                if (reservations.length === 0) {
+                    showAlert('目前還沒有任何預約資料可以匯出喔！');
+                    return;
+                }
+
+                let icsContent = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Handdrawn Calendar//TW\r\nCALSCALE:GREGORIAN\r\n";
+                
+                reservations.forEach(res => {
+                    // 移除 - 和 : 符號，轉換為 YYYYMMDDTHHMMSS 格式 (Floating Time 當地時間)
+                    const startDt = res.startDate.replace(/-/g, '') + 'T' + res.startTime.replace(/:/g, '') + '00';
+                    const endDt = res.endDate.replace(/-/g, '') + 'T' + res.endTime.replace(/:/g, '') + '00';
+                    
+                    icsContent += "BEGIN:VEVENT\r\n";
+                    icsContent += `SUMMARY:【${res.venue}】${res.name} - ${res.reason}\r\n`;
+                    icsContent += `DTSTART:${startDt}\r\n`;
+                    icsContent += `DTEND:${endDt}\r\n`;
+                    icsContent += `DESCRIPTION:預約人：${res.name}\\n事由：${res.reason}\\n場地：${res.venue}\r\n`;
+                    icsContent += "END:VEVENT\r\n";
+                });
+                
+                icsContent += "END:VCALENDAR";
+
+                // 建立 blob 並觸發下載
+                const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
+                const link = document.createElement('a');
+                link.href = window.URL.createObjectURL(blob);
+                link.download = 'reservations.ics';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+
+                showAlert('📅 匯出成功！\n\n已下載「reservations.ics」檔案。\n\n請前往您的 Google 日曆：\n1. 點擊右上角「齒輪」進入設定\n2. 點選左側「匯入和匯出」\n3. 選擇剛剛下載的檔案即可一鍵同步全部行程！');
+            };
+
+            // 匯出成 Excel (CSV) 檔案，並依日期時間排序
+            const exportToExcel = () => {
+                if (reservations.length === 0) {
+                    showAlert('目前還沒有任何預約資料可以匯出喔！');
+                    return;
+                }
+
+                // 1. 依照開始日期與開始時間進行排序 (因為格式是 YYYY-MM-DD 與 HH:00，可以直接用字串比對)
+                const sortedReservations = [...reservations].sort((a, b) => {
+                    const dtA = a.startDate + a.startTime;
+                    const dtB = b.startDate + b.startTime;
+                    return dtA.localeCompare(dtB);
+                });
+
+                // 2. 準備 CSV 內容，加入 BOM (\uFEFF) 讓 Excel 能正確解析 UTF-8 中文
+                let csvContent = '\uFEFF';
+                csvContent += "開始日期,開始時間,結束日期,結束時間,場地,預約人,預約事由\n";
+
+                sortedReservations.forEach(res => {
+                    // 將字串中的雙引號替換成兩個雙引號，並用雙引號包起來，避免內容包含逗號時跑版
+                    const safeName = `"${res.name.replace(/"/g, '""')}"`;
+                    const safeReason = `"${res.reason.replace(/"/g, '""')}"`;
+                    const safeVenue = `"${res.venue.replace(/"/g, '""')}"`;
+
+                    csvContent += `${res.startDate},${res.startTime}:00,${res.endDate},${res.endTime}:00,${safeVenue},${safeName},${safeReason}\n`;
+                });
+
+                // 3. 建立 blob 並觸發下載
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const link = document.createElement('a');
+                link.href = window.URL.createObjectURL(blob);
+                link.download = 'reservations_data.csv';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+
+                showAlert('📊 匯出成功！\n\n已下載「reservations_data.csv」檔案。\n可以直接使用 Excel 或 Google 試算表開啟喔！');
+            };
+
+            // 月曆相關邏輯
+            const nextMonth = () => {
+                setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1));
+            };
+
+            const prevMonth = () => {
+                setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1));
+            };
+
+            // 產生當月日曆網格資料
+            const calendarDays = useMemo(() => {
+                const year = currentDate.getFullYear();
+                const month = currentDate.getMonth();
+                
+                const firstDay = new Date(year, month, 1);
+                const lastDay = new Date(year, month + 1, 0);
+                
+                const days = [];
+                
+                // 補齊前面的空白天數 (星期日為 0)
+                for (let i = 0; i < firstDay.getDay(); i++) {
+                    const prevDate = new Date(year, month, -i);
+                    days.unshift({ date: prevDate, isCurrentMonth: false });
+                }
+                
+                // 當月天數
+                for (let i = 1; i <= lastDay.getDate(); i++) {
+                    days.push({ date: new Date(year, month, i), isCurrentMonth: true });
+                }
+                
+                // 補齊後面的空白天數，讓日曆保持完整的矩形 (通常是 6 列 = 42 格)
+                const remainingCells = 42 - days.length;
+                for (let i = 1; i <= remainingCells; i++) {
+                    days.push({ date: new Date(year, month + 1, i), isCurrentMonth: false });
+                }
+                
+                return days;
+            }, [currentDate]);
+
+            // 檢查某個預約是否包含該日期 (改用字串比對，徹底避免時區與跨日判斷問題)
+            const isReservationOnDate = (res, targetDate) => {
+                const targetStr = formatDate(targetDate);
+                return targetStr >= res.startDate && targetStr <= res.endDate;
+            };
+
+            return (
+                <div className="space-y-8 pb-12">
+                    {/* --- 標題區 --- */}
+                    <div className="text-center mt-6 mb-8">
+                        <h1 className="text-4xl md:text-5xl font-bold text-slate-800 tracking-wider inline-block relative">
+                            行程預約白板
+                            <div className="absolute -bottom-2 left-0 w-full h-1 bg-slate-800 rounded-full opacity-70 transform -rotate-1"></div>
+                        </h1>
+                    </div>
+
+                    {/* --- 系統設定區 --- */}
+                    <div className="max-w-4xl mx-auto mb-6 flex justify-end items-center gap-2 px-4">
+                        <label className="font-bold text-slate-600">⚙️ 系統設定：每個場地同時段最高預約數</label>
+                        <select 
+                            value={maxCapacity} 
+                            onChange={(e) => setMaxCapacity(Number(e.target.value))} 
+                            className="sketchy-border-sm px-2 py-1 bg-white font-bold text-slate-800 outline-none"
+                        >
+                            {[1, 2, 3, 4, 5, 10].map(num => (
+                                <option key={num} value={num}>{num} 筆預約</option>
+                            ))}
+                        </select>
+                    </div>
+
+                    {/* --- 上方：基本資料及選取內容區 --- */}
+                    <div className="sketchy-border p-6 md:p-8 max-w-4xl mx-auto relative bg-white">
+                        <div className="absolute -top-4 -left-4 w-12 h-12 bg-red-400 rounded-full opacity-50 flex items-center justify-center transform -rotate-12">
+                            <span className="text-white font-bold text-xl">PIN</span>
+                        </div>
+                        
+                        <h2 className="text-2xl font-bold mb-6 text-slate-700 flex items-center">
+                            <span className="mr-2">✍️</span>
+                            {isEditing ? '修改預約資料' : '新增預約資料'}
+                        </h2>
+
+                        <form onSubmit={handleSubmit} className="space-y-6">
+                            {/* 基本資料：名字與事由 */}
+                            <div className="flex flex-col md:flex-row gap-4 items-start">
+                                <div className="w-full md:w-1/3">
+                                    <label className="block text-lg font-bold mb-2 text-slate-600">你的名字</label>
+                                    <input 
+                                        type="text" 
+                                        name="name"
+                                        value={formData.name}
+                                        onChange={handleInputChange}
+                                        placeholder="例如：王小明" 
+                                        className="sketchy-border-sm w-full px-4 py-2 text-xl"
+                                        required
+                                    />
+                                </div>
+                                <div className="w-full md:w-2/3">
+                                    <label className="block text-lg font-bold mb-2 text-slate-600">預約事由</label>
+                                    <input 
+                                        type="text" 
+                                        name="reason"
+                                        value={formData.reason}
+                                        onChange={handleInputChange}
+                                        placeholder="例如：專案開會、場地借用..." 
+                                        className="sketchy-border-sm w-full px-4 py-2 text-xl"
+                                        required
+                                    />
+                                </div>
+                            </div>
+
+                            {/* 場地與日期時間區 (使用 Grid 排版，分為三欄) */}
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 bg-slate-50 p-4 rounded-xl border-2 border-dashed border-slate-300">
+                                
+                                {/* 場地選擇 */}
+                                <div className="space-y-4 md:col-span-1">
+                                    <div>
+                                        <label className="block text-lg font-bold mb-1 text-blue-700">選擇場地</label>
+                                        <select 
+                                            name="venue"
+                                            value={formData.venue}
+                                            onChange={handleInputChange}
+                                            className="sketchy-border-sm w-full px-3 py-2 bg-white"
+                                        >
+                                            {VENUE_OPTIONS.map(v => (
+                                                <option key={v} value={v}>{v}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                    <div className="p-3 bg-blue-50 text-blue-800 text-sm rounded-lg sketchy-border-sm mt-4 hidden md:block">
+                                        💡 提示：<br/>
+                                        時間以<b>小時</b>為單位。<br/>
+                                        同一個場地同時段最多接受 <b>{maxCapacity}</b> 筆預約唷！
+                                    </div>
+                                </div>
+
+                                {/* 開始設定 */}
+                                <div className="space-y-4 md:col-span-1">
+                                    <div>
+                                        <label className="block text-lg font-bold mb-1 text-green-700">開始日期</label>
+                                        <input 
+                                            type="date" 
+                                            name="startDate"
+                                            value={formData.startDate}
+                                            onChange={handleInputChange}
+                                            className="sketchy-border-sm w-full px-3 py-2 bg-white"
+                                            required
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-lg font-bold mb-1 text-green-700">開始時間</label>
+                                        <div className="flex gap-2">
+                                            <select name="startAmpm" value={formData.startAmpm} onChange={handleInputChange} className="sketchy-border-sm px-1 py-2 flex-1 text-center bg-white">
+                                                <option value="AM">上午</option>
+                                                <option value="PM">下午</option>
+                                            </select>
+                                            <select name="startHour" value={formData.startHour} onChange={handleInputChange} className="sketchy-border-sm px-1 py-2 flex-1 text-center bg-white">
+                                                {Array.from({length: 12}, (_, i) => String(i + 1).padStart(2, '0')).map(h => <option key={h} value={h}>{h}時</option>)}
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* 結束設定 */}
+                                <div className="space-y-4 md:col-span-1">
+                                    <div>
+                                        <label className="block text-lg font-bold mb-1 text-red-700">結束日期</label>
+                                        <input 
+                                            type="date" 
+                                            name="endDate"
+                                            value={formData.endDate}
+                                            onChange={handleInputChange}
+                                            min={formData.startDate} // 限制不能早於開始日期
+                                            className="sketchy-border-sm w-full px-3 py-2 bg-white"
+                                            required
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-lg font-bold mb-1 text-red-700">結束時間</label>
+                                        <div className="flex gap-2">
+                                            <select name="endAmpm" value={formData.endAmpm} onChange={handleInputChange} className="sketchy-border-sm px-1 py-2 flex-1 text-center bg-white">
+                                                <option value="AM">上午</option>
+                                                <option value="PM">下午</option>
+                                            </select>
+                                            <select name="endHour" value={formData.endHour} onChange={handleInputChange} className="sketchy-border-sm px-1 py-2 flex-1 text-center bg-white">
+                                                {Array.from({length: 12}, (_, i) => String(i + 1).padStart(2, '0')).map(h => <option key={h} value={h}>{h}時</option>)}
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+
+                            </div>
+
+                            {/* 送出按鈕區 */}
+                            <div className="flex justify-center md:justify-end gap-4 mt-2">
+                                {isEditing && (
+                                    <button 
+                                        type="button" 
+                                        onClick={handleCancelEdit}
+                                        className="sketchy-btn sketchy-border-sm bg-gray-200 text-slate-700 font-bold text-xl px-8 py-2 w-full md:w-auto"
+                                    >
+                                        取消
+                                    </button>
+                                )}
+                                <button 
+                                    type="submit" 
+                                    className="sketchy-btn sketchy-border-sm bg-slate-800 text-white font-bold text-xl px-12 py-2 w-full md:w-auto"
+                                >
+                                    {isEditing ? '更新送出' : '確認預約！'}
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+
+                    {/* --- 下方：預約完成結果畫面 (月曆) --- */}
+                    <div className="max-w-6xl mx-auto mt-12">
+                        
+                        {/* 月曆控制列 & 匯出按鈕 */}
+                        <div className="flex flex-col md:flex-row items-center justify-between mb-4 px-4 gap-4">
+                            
+                            <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
+                                <button 
+                                    onClick={exportToICS} 
+                                    className="sketchy-btn sketchy-border-sm px-4 py-2 bg-blue-50 text-blue-800 font-bold flex items-center gap-2 hover:bg-blue-100 justify-center"
+                                >
+                                    <span className="text-xl">📅</span> Google 日曆
+                                </button>
+                                <button 
+                                    onClick={exportToExcel} 
+                                    className="sketchy-btn sketchy-border-sm px-4 py-2 bg-green-50 text-green-800 font-bold flex items-center gap-2 hover:bg-green-100 justify-center"
+                                >
+                                    <span className="text-xl">📊</span> 匯出 Excel
+                                </button>
+                            </div>
+                            
+                            <div className="flex items-center justify-between w-full md:w-auto gap-4">
+                                <button onClick={prevMonth} className="sketchy-btn sketchy-border-sm px-4 py-1 text-xl md:text-2xl font-bold bg-white">
+                                    &lt; 上個月
+                                </button>
+                                <h2 className="text-2xl md:text-3xl font-bold text-slate-800 whitespace-nowrap">
+                                    {currentDate.getFullYear()} 年 {currentDate.getMonth() + 1} 月
+                                </h2>
+                                <button onClick={nextMonth} className="sketchy-btn sketchy-border-sm px-4 py-1 text-xl md:text-2xl font-bold bg-white">
+                                    下個月 &gt;
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* 月曆主體 */}
+                        <div className="calendar-grid bg-white shadow-lg">
+                            {/* 星期標題 */}
+                            <div className="grid grid-cols-7 bg-slate-800 text-white border-b-4 border-slate-800">
+                                {['日', '一', '二', '三', '四', '五', '六'].map(day => (
+                                    <div key={day} className="py-3 text-center font-bold text-xl border-r border-slate-700 last:border-r-0">
+                                        星期{day}
+                                    </div>
+                                ))}
+                            </div>
+
+                            {/* 日期格子 */}
+                            <div className="grid grid-cols-7 bg-white">
+                                {calendarDays.map((dayObj, index) => {
+                                    // 找出這天的所有預約
+                                    const dayReservations = reservations.filter(res => isReservationOnDate(res, dayObj.date));
+                                    
+                                    // 照開始時間排序
+                                    dayReservations.sort((a, b) => a.startTime.localeCompare(b.startTime));
+
+                                    const isToday = formatDate(dayObj.date) === formatDate(new Date());
+
+                                    return (
+                                        <div 
+                                            key={index} 
+                                            className={`calendar-cell p-1 md:p-2 ${dayObj.isCurrentMonth ? '' : 'bg-gray-100 text-gray-400'} ${isToday ? 'bg-yellow-50' : ''}`}
+                                        >
+                                            {/* 日期數字 */}
+                                            <div className="flex justify-between items-start mb-1">
+                                                <span className={`font-bold text-lg inline-block w-8 h-8 text-center leading-8 rounded-full ${isToday ? 'bg-red-400 text-white' : ''}`}>
+                                                    {dayObj.date.getDate()}
+                                                </span>
+                                            </div>
+
+                                            {/* 預約便利貼列表 */}
+                                            <div className="space-y-1 mt-2">
+                                                {dayReservations.map(res => (
+                                                    <div 
+                                                        key={res.id}
+                                                        onClick={() => handlePinForEdit(res)}
+                                                        className="reservation-note text-sm p-1.5 px-2 relative group"
+                                                        style={{ backgroundColor: res.color }}
+                                                        title="點擊修改內容"
+                                                    >
+                                                        <div className="font-bold truncate text-slate-800 flex items-center justify-between">
+                                                            <span>{res.name}</span>
+                                                            <span className="text-[10px] bg-white/60 px-1 rounded sketchy-border-sm">{res.venue}</span>
+                                                        </div>
+                                                        <div className="text-sm truncate text-slate-800 font-medium mb-1">{res.reason}</div>
+                                                        <div className="text-xs text-slate-700 opacity-90 truncate">
+                                                            {/* 若跨日，顯示不同資訊 */}
+                                                            {res.startDate !== res.endDate ? (
+                                                                formatDate(dayObj.date) === res.startDate ? `起 ${res.startAmpm==='AM'?'上午':'下午'} ${res.startHour}:00` : 
+                                                                formatDate(dayObj.date) === res.endDate ? `止 ${res.endAmpm==='AM'?'上午':'下午'} ${res.endHour}:00` : '整天'
+                                                            ) : (
+                                                                `${res.startAmpm==='AM'?'上午':'下午'} ${res.startHour}:00 - ${res.endAmpm==='AM'?'上午':'下午'} ${res.endHour}:00`
+                                                            )}
+                                                        </div>
+                                                        {/* 隱藏的刪除小按鈕 */}
+                                                        <button 
+                                                            onClick={(e) => handlePinForDelete(res, e)}
+                                                            className="absolute -top-2 -right-2 bg-slate-800 text-white rounded-full w-5 h-5 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                                                            title="刪除"
+                                                        >
+                                                            ×
+                                                        </button>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                        
+                        <div className="mt-4 text-center text-slate-500 font-bold">
+                            💡 提示：直接點擊日曆上的預約項目（彩色便利貼），就可以把它拉回上方白板進行修改喔！
+                        </div>
+                    </div>
+
+                    {/* --- 自訂 Modal 彈窗 (支援身分驗證輸入) --- */}
+                    {dialog.isOpen && (
+                        <div className="fixed inset-0 bg-slate-900 bg-opacity-40 flex items-center justify-center z-50 px-4">
+                            <div className="bg-white p-6 md:p-8 rounded-2xl sketchy-border max-w-sm w-full shadow-2xl transform scale-100 transition-transform">
+                                <h3 className="text-2xl font-bold text-slate-800 mb-4">
+                                    {dialog.type === 'confirm' ? '🤔 請確認' : dialog.type === 'pin' ? '🔐 身分驗證' : dialog.type === 'show-pin' ? '🎉 預約成功' : '💡 提示'}
+                                </h3>
+                                
+                                {/* 允許支援換行 (\n) 顯示訊息 (一般模式) */}
+                                {dialog.type !== 'show-pin' && (
+                                    <div className="text-xl text-slate-600 mb-6 whitespace-pre-wrap leading-relaxed">
+                                        {dialog.message}
+                                    </div>
+                                )}
+
+                                {/* 顯示專屬確認碼與複製功能版面 */}
+                                {dialog.type === 'show-pin' && (
+                                    <div className="mb-6 text-slate-600">
+                                        <div className="text-xl whitespace-pre-wrap leading-relaxed mb-4">{dialog.message}</div>
+                                        <div className="flex items-center justify-center gap-4 bg-slate-100 p-4 rounded-xl sketchy-border-sm mb-4">
+                                            <span className="text-4xl font-bold tracking-[0.2em] text-slate-800">{dialog.pinToCopy}</span>
+                                            <button 
+                                                onClick={() => {
+                                                    copyToClipboard(dialog.pinToCopy);
+                                                    setIsCopied(true);
+                                                    setTimeout(() => setIsCopied(false), 2000); // 2秒後恢復原狀
+                                                }}
+                                                className={`sketchy-btn sketchy-border-sm px-4 py-2 font-bold text-md transition-colors ${isCopied ? 'bg-green-600 text-white' : 'bg-slate-800 text-white'}`}
+                                            >
+                                                {isCopied ? '已複製 ✓' : '複製'}
+                                            </button>
+                                        </div>
+                                        <div className="text-md text-red-600 font-bold whitespace-pre-wrap leading-relaxed">{dialog.warning}</div>
+                                    </div>
+                                )}
+
+                                {/* 密碼輸入框 */}
+                                {dialog.type === 'pin' && (
+                                    <div className="flex flex-col items-center">
+                                        <input 
+                                            type="text" 
+                                            value={pinInput}
+                                            onChange={(e) => setPinInput(e.target.value)}
+                                            placeholder="請輸入4碼數字"
+                                            className="sketchy-border-sm w-full px-4 py-2 text-2xl mb-4 text-center tracking-[0.5em] font-bold text-slate-700 bg-slate-50"
+                                            maxLength={4}
+                                        />
+                                        <div className="text-sm text-slate-500 text-center mb-6 w-full bg-yellow-50 p-3 rounded-lg sketchy-border-sm">
+                                            💡 <b>忘記確認碼？</b><br/>
+                                            使用原預約設備開啟，系統會自動為您填入。<br/>
+                                            或請聯繫管理員協助刪除。
+                                        </div>
+                                    </div>
+                                )}
+
+                                <div className="flex justify-end gap-3">
+                                    {(dialog.type === 'confirm' || dialog.type === 'pin') && (
+                                        <button 
+                                            onClick={() => setDialog({ ...dialog, isOpen: false })}
+                                            className="sketchy-btn sketchy-border-sm px-5 py-2 bg-gray-100 text-slate-700 font-bold text-lg"
+                                        >
+                                            取消
+                                        </button>
+                                    )}
+                                    <button 
+                                        onClick={() => {
+                                            if (dialog.type === 'pin') {
+                                                // 驗證輸入的確認碼是否符合 (加入 8888 萬用密碼作為管理員後門)
+                                                if (String(pinInput) === String(dialog.expectedPin) || String(pinInput) === "8888") {
+                                                    if (dialog.onConfirm) dialog.onConfirm();
+                                                    setDialog({ ...dialog, isOpen: false });
+                                                } else {
+                                                    // 密碼錯誤，直接顯示錯誤訊息
+                                                    setDialog({ isOpen: true, message: '❌ 確認碼錯誤！\n請重新確認後再試。', type: 'alert', onConfirm: null });
+                                                }
+                                            } else {
+                                                if (dialog.onConfirm) dialog.onConfirm();
+                                                setDialog({ ...dialog, isOpen: false });
+                                            }
+                                        }}
+                                        className="sketchy-btn sketchy-border-sm px-5 py-2 bg-slate-800 text-white font-bold text-lg"
+                                    >
+                                        確定
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html><!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>手繪白板風 - 行程預約系統</title>
+    
+    <!-- 引入 React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- 引入 Babel 讓瀏覽器解析 JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- 引入 Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- 引入 Google Fonts: Kalam (手寫風) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Kalam:wght@300;400;700&display=swap" rel="stylesheet">
+
+    <style>
+        /* 手繪白板風自訂樣式 */
+        body {
+            font-family: 'Kalam', cursive, sans-serif;
+            background-color: #f0f0f0; /* 淡淡的灰底，襯托白板 */
+            background-image: radial-gradient(#d1d1d1 1px, transparent 1px); /* 網點背景增加質感 */
+            background-size: 20px 20px;
+            color: #333;
+        }
+
+        /* 核心的手繪不規則邊框 */
+        .sketchy-border {
+            border: 3px solid #2c3e50;
+            border-radius: 255px 15px 225px 15px/15px 225px 15px 255px;
+            background-color: white;
+            box-shadow: 4px 4px 0px rgba(0,0,0,0.1);
+            transition: all 0.2s ease;
+        }
+
+        .sketchy-border-sm {
+            border: 2px solid #2c3e50;
+            border-radius: 15px 225px 15px 255px/255px 15px 225px 15px;
+            background-color: white;
+        }
+
+        /* 輸入框特化 */
+        input, select {
+            font-family: 'Kalam', cursive, sans-serif;
+            font-size: 1.1rem;
+            outline: none;
+            background-color: transparent;
+        }
+        
+        input:focus {
+            background-color: #fdfbf7;
+        }
+
+        /* 按鈕 hover 效果：線條稍微改變感覺像重新畫過 */
+        .sketchy-btn:hover {
+            transform: translate(-2px, -2px);
+            box-shadow: 6px 6px 0px rgba(0,0,0,0.15);
+            border-radius: 15px 255px 15px 225px/225px 15px 255px 15px;
+        }
+        
+        .sketchy-btn:active {
+            transform: translate(2px, 2px);
+            box-shadow: 1px 1px 0px rgba(0,0,0,0.1);
+        }
+
+        /* 日曆網格的邊框 */
+        .calendar-cell {
+            border-right: 2px solid #e2e8f0;
+            border-bottom: 2px solid #e2e8f0;
+            min-height: 100px;
+        }
+        /* 讓日曆看起來像手繪格子 */
+        .calendar-grid {
+            border: 3px solid #2c3e50;
+            border-radius: 20px 10px 30px 15px/15px 30px 10px 20px;
+            overflow: hidden;
+            background: white;
+        }
+
+        /* 預約便利貼 */
+        .reservation-note {
+            border: 1px solid rgba(0,0,0,0.2);
+            border-radius: 2px 15px 5px 10px/10px 5px 15px 2px;
+            box-shadow: 2px 2px 3px rgba(0,0,0,0.05);
+            cursor: pointer;
+            transition: transform 0.1s;
+        }
+        .reservation-note:hover {
+            transform: scale(1.02) rotate(-1deg);
+            z-index: 10;
+        }
+        
+        /* 隱藏預設的日期/時間圖示，讓畫面更乾淨 */
+        input[type="date"]::-webkit-calendar-picker-indicator,
+        input[type="time"]::-webkit-calendar-picker-indicator {
+            filter: invert(0.5); /* 讓圖示不那麼突兀 */
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <div id="root" class="max-w-5xl mx-auto"></div>
+
+    <script type="text/babel" data-type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const { useState, useEffect, useMemo } = React;
+
+        // 粉彩顏色庫，用於不同使用者
+        const pastelColors = [
+            '#FFB3BA', '#FFDFBA', '#FFFFBA', '#BAFFC9', '#BAE1FF', 
+            '#E8BAFF', '#FFBAFF', '#D4F0F0', '#F3E8FF', '#FEE2E2'
+        ];
+
+        // 簡單的 Hash 函數，確保同一個名字獲得相同的顏色
+        const getColorForName = (name) => {
+            if (!name) return '#ffffff';
+            let hash = 0;
+            for (let i = 0; i < name.length; i++) {
+                hash = name.charCodeAt(i) + ((hash << 5) - hash);
+            }
+            return pastelColors[Math.abs(hash) % pastelColors.length];
+        };
+
+        // 格式化日期為 YYYY-MM-DD
+        const formatDate = (date) => {
+            const d = new Date(date);
+            let month = '' + (d.getMonth() + 1);
+            let day = '' + d.getDate();
+            const year = d.getFullYear();
+
+            if (month.length < 2) month = '0' + month;
+            if (day.length < 2) day = '0' + day;
+
+            return [year, month, day].join('-');
+        };
+
+        // 將 上/下午 + 時 轉換成 24小時制字串 (因應純小時制，移除分鐘)
+        const get24HTime = (ampm, h) => {
+            let hour = parseInt(h, 10);
+            
+            // 修正台灣常見的直覺時間認知：
+            // 大家直覺「上午 12 時」是指「中午 12 點 (12:00)」
+            // 「下午 12 時」是指「半夜 12 點 (24:00)」
+            if (ampm === 'AM' && hour === 12) {
+                hour = 12;
+            } else if (ampm === 'PM' && hour === 12) {
+                hour = 24;
+            } else if (ampm === 'PM') {
+                hour += 12;
+            }
+
+            return `${hour.toString().padStart(2, '0')}:00`;
+        };
+
+        // 將日期與時間字串轉為 Date 物件
+        const parseToDate = (dateStr, timeStr) => {
+            const [y, m, d] = dateStr.split('-').map(Number);
+            const [h, min] = timeStr.split(':').map(Number);
+            return new Date(y, m - 1, d, h, min);
+        };
+
+        // 計算區間內涵蓋的所有「小時」時段 (例如回傳: ["2026-04-15 09:00", "2026-04-15 10:00"])
+        const getRequestedSlots = (startDate, startTime, endDate, endTime) => {
+            const slots = [];
+            let current = parseToDate(startDate, startTime);
+            const end = parseToDate(endDate, endTime);
+            
+            while (current < end) {
+                const y = current.getFullYear();
+                const m = String(current.getMonth() + 1).padStart(2, '0');
+                const d = String(current.getDate()).padStart(2, '0');
+                const h = String(current.getHours()).padStart(2, '0');
+                slots.push(`${y}-${m}-${d} ${h}:00`);
+                current = new Date(current.getTime() + 60 * 60 * 1000); // 增加一小時
+            }
+            return slots;
+        };
+
+        // 預設場地選項
+        const VENUE_OPTIONS = ['A會議室', 'B會議室', 'C展演廳', '戶外廣場'];
+
+        // --- Firebase Setup ---
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const collectionName = 'reservations';
+
+        const App = () => {
+            // 狀態管理
+            const [user, setUser] = useState(null);
+            const [reservations, setReservations] = useState([]);
+            const [currentDate, setCurrentDate] = useState(new Date());
+            
+            // 系統設定狀態：同一個時段可以預約數量 (預設3個)
+            const [maxCapacity, setMaxCapacity] = useState(3);
+            
+            // --- Firebase Auth & 雲端資料同步 ---
+            useEffect(() => {
+                const initAuth = async () => {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                };
+                initAuth();
+                const unsubscribe = onAuthStateChanged(auth, setUser);
+                return () => unsubscribe();
+            }, []);
+
+            useEffect(() => {
+                if (!user) return; // 確認有權限才撈取資料
+                
+                const publicCollectionRef = collection(db, 'artifacts', appId, 'public', 'data', collectionName);
+                
+                // onSnapshot 會自動保持資料即時同步
+                const unsubscribe = onSnapshot(publicCollectionRef, (snapshot) => {
+                    const loadedReservations = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    setReservations(loadedReservations);
+                }, (error) => {
+                    console.error("無法取得預約資料:", error);
+                });
+                
+                return () => unsubscribe();
+            }, [user]);
+
+            // 自訂 Dialog 狀態 (加入 pinPrompt 支援與 pinInput)
+            const [dialog, setDialog] = useState({ isOpen: false, message: '', type: 'alert', onConfirm: null, expectedPin: '', pinToCopy: '', warning: '' });
+            const [pinInput, setPinInput] = useState('');
+            const [isCopied, setIsCopied] = useState(false); // 用於記錄是否已點擊複製
+
+            const showAlert = (message) => setDialog({ isOpen: true, message, type: 'alert', onConfirm: null });
+            const showConfirm = (message, onConfirm) => setDialog({ isOpen: true, message, type: 'confirm', onConfirm });
+            // 修改 prompt 以支援讀取本機記憶的密碼
+            const showPinPrompt = (message, expectedPin, onConfirm, resId) => {
+                let autoPin = '';
+                try {
+                    // 嘗試從瀏覽器 Local Storage 找回這筆預約的密碼
+                    const savedPins = JSON.parse(localStorage.getItem('my_reservation_pins') || '{}');
+                    if (savedPins[resId]) {
+                        autoPin = savedPins[resId];
+                    }
+                } catch (e) { console.error('讀取記憶密碼失敗', e); }
+                
+                setPinInput(autoPin); // 若有找到，自動幫使用者帶入
+                setDialog({ isOpen: true, message, type: 'pin', expectedPin, onConfirm });
+            };
+
+            // 表單狀態
+            const [formData, setFormData] = useState({
+                id: null,
+                name: '',
+                reason: '',
+                venue: VENUE_OPTIONS[0],
+                startDate: formatDate(new Date()),
+                endDate: formatDate(new Date()),
+                startAmpm: 'AM',
+                startHour: '09',
+                endAmpm: 'AM',
+                endHour: '10',
+                pin: '' // 新增存放此筆預約的確認碼
+            });
+
+            const [isEditing, setIsEditing] = useState(false);
+
+            // 處理表單輸入改變
+            const handleInputChange = (e) => {
+                const { name, value } = e.target;
+                setFormData(prev => {
+                    const newData = { ...prev, [name]: value };
+                    
+                    // 連動功能 1：當「開始日期」改變時，直接讓「結束日期」同步更新到同一天，省去重複選擇
+                    if (name === 'startDate') {
+                        newData.endDate = value;
+                    }
+                    
+                    // 連動功能 2：當「開始時間的上下午」改變時，連動更新「結束時間的上下午」
+                    if (name === 'startAmpm') {
+                        newData.endAmpm = value;
+                    }
+
+                    return newData;
+                });
+            };
+
+            // 複製文字到剪貼簿 (相容於 iframe 限制的寫法)
+            const copyToClipboard = (text) => {
+                const textArea = document.createElement("textarea");
+                textArea.value = text;
+                document.body.appendChild(textArea);
+                textArea.select();
+                try {
+                    document.execCommand('copy');
+                } catch (err) {
+                    console.error('複製失敗', err);
+                }
+                document.body.removeChild(textArea);
+            };
+
+            // 送出表單 (新增或修改)
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                
+                if (!formData.name.trim()) {
+                    showAlert('請輸入名字喔！');
+                    return;
+                }
+
+                if (!formData.reason.trim()) {
+                    showAlert('請輸入預約事由喔！');
+                    return;
+                }
+
+                if (formData.startDate > formData.endDate) {
+                    showAlert('開始日期不能晚於結束日期喔！');
+                    return;
+                }
+
+                const startTime24 = get24HTime(formData.startAmpm, formData.startHour);
+                const endTime24 = get24HTime(formData.endAmpm, formData.endHour);
+
+                if (formData.startDate === formData.endDate && startTime24 >= endTime24) {
+                    showAlert('同一天的話，結束時間要晚於開始時間喔！');
+                    return;
+                }
+
+                // --- 驗證：場地衝突 & 總預約數量上限 ---
+                const reqSlots = getRequestedSlots(formData.startDate, startTime24, formData.endDate, endTime24);
+                
+                for (const slot of reqSlots) {
+                    let venueOverlappingCount = 0;
+
+                    for (const res of reservations) {
+                        // 編輯時，排除自己本身的舊資料
+                        if (isEditing && res.id === formData.id) continue;
+
+                        const resSlots = getRequestedSlots(res.startDate, res.startTime, res.endDate, res.endTime);
+                        // 只計算「同一個場地」在「同一個時段」的預約數量
+                        if (resSlots.includes(slot) && res.venue === formData.venue) {
+                            venueOverlappingCount++;
+                        }
+                    }
+
+                    // 只有當同一個場地超過最高預約數時，才阻擋申請
+                    if (venueOverlappingCount >= maxCapacity) {
+                        showAlert(`Oops！【${formData.venue}】在 ${slot} 的預約已達上限（${maxCapacity}筆）！請選擇其他場地或時段。`);
+                        return;
+                    }
+                }
+
+                // 產生 4 碼確認碼 (若是新增預約)
+                let currentPin = formData.pin;
+                if (!isEditing) {
+                    currentPin = Math.floor(1000 + Math.random() * 9000).toString();
+                }
+
+                const newReservationData = {
+                    ...formData,
+                    startTime: startTime24,
+                    endTime: endTime24,
+                    color: getColorForName(formData.name),
+                    pin: currentPin // 綁定確認碼存入雲端
+                };
+
+                const publicCollectionRef = collection(db, 'artifacts', appId, 'public', 'data', collectionName);
+
+                if (isEditing) {
+                    // 修改現有預約 (存入雲端)
+                    newReservationData.id = formData.id;
+                    const docRef = doc(publicCollectionRef, formData.id);
+                    setDoc(docRef, newReservationData).catch(err => console.error(err));
+                    setIsEditing(false);
+                    showAlert('🎉 預約資料已成功更新！');
+                } else {
+                    // 新增預約 (存入雲端)
+                    const newId = Date.now().toString();
+                    newReservationData.id = newId;
+                    const docRef = doc(publicCollectionRef, newId);
+                    setDoc(docRef, newReservationData).catch(err => console.error(err));
+                    
+                    // --- 新增：將確認碼記憶在當前瀏覽器中 ---
+                    try {
+                        const savedPins = JSON.parse(localStorage.getItem('my_reservation_pins') || '{}');
+                        savedPins[newId] = currentPin;
+                        localStorage.setItem('my_reservation_pins', JSON.stringify(savedPins));
+                    } catch (e) { console.error('儲存記憶密碼失敗', e); }
+
+                    // 顯示帶有複製按鈕的專屬成功畫面給使用者
+                    setDialog({
+                        isOpen: true,
+                        type: 'show-pin',
+                        message: '您的專屬確認碼為：',
+                        pinToCopy: currentPin,
+                        warning: '⚠️ 日後若要修改或刪除此預約，將需要輸入此確認碼，請務必妥善記下喔！',
+                        onConfirm: null
+                    });
+                }
+
+                // 清空表單 (保留日期方便連續輸入)
+                setFormData(prev => ({
+                    ...prev,
+                    id: null,
+                    name: '',
+                    reason: '',
+                    venue: VENUE_OPTIONS[0],
+                    startAmpm: 'AM',
+                    startHour: '09',
+                    endAmpm: 'AM',
+                    endHour: '10',
+                    pin: ''
+                }));
+            };
+
+            // 取消編輯
+            const handleCancelEdit = () => {
+                setIsEditing(false);
+                setFormData({
+                    id: null,
+                    name: '',
+                    reason: '',
+                    venue: VENUE_OPTIONS[0],
+                    startDate: formatDate(new Date()),
+                    endDate: formatDate(new Date()),
+                    startAmpm: 'AM',
+                    startHour: '09',
+                    endAmpm: 'AM',
+                    endHour: '10',
+                    pin: ''
+                });
+            };
+
+            // 點擊日曆上的預約項目進行編輯 (此處單純載入資料，攔截邏輯移至 handlePinForEdit)
+            const handleEditClick = (res) => {
+                setFormData({
+                    id: res.id,
+                    name: res.name,
+                    reason: res.reason,
+                    venue: res.venue || VENUE_OPTIONS[0],
+                    startDate: res.startDate,
+                    endDate: res.endDate,
+                    startAmpm: res.startAmpm,
+                    startHour: res.startHour,
+                    endAmpm: res.endAmpm,
+                    endHour: res.endHour,
+                    pin: res.pin || ''
+                });
+                setIsEditing(true);
+                // 滾動到頂部方便編輯
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+            };
+
+            // 身分驗證：修改前確認
+            const handlePinForEdit = (res) => {
+                // 如果是舊資料(無密碼)防呆，直接允許修改
+                if (!res.pin) {
+                    handleEditClick(res);
+                    return;
+                }
+                showPinPrompt(`請輸入確認碼以修改【${res.name}】的預約：`, res.pin, () => {
+                    handleEditClick(res);
+                }, res.id); // 傳入 res.id 以供尋找記憶密碼
+            };
+
+            // 身分驗證：刪除前確認
+            const handlePinForDelete = (res, e) => {
+                e.stopPropagation(); // 阻止觸發編輯的點擊事件
+                
+                // 舊資料防呆處理
+                if (!res.pin) {
+                    showConfirm('確定要擦掉這個預約嗎？', () => {
+                        const docRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'reservations'), res.id);
+                        deleteDoc(docRef).catch(err => console.error(err));
+                        if (formData.id === res.id) handleCancelEdit();
+                    });
+                    return;
+                }
+
+                showPinPrompt(`請輸入確認碼以刪除【${res.name}】的預約：`, res.pin, () => {
+                    const docRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'reservations'), res.id);
+                    deleteDoc(docRef).catch(err => console.error(err));
+                    if (formData.id === res.id) handleCancelEdit();
+                    showAlert('🗑️ 預約已成功刪除！');
+                }, res.id); // 傳入 res.id 以供尋找記憶密碼
+            };
+
+            // 匯出成 .ics 檔案供 Google 日曆匯入
+            const exportToICS = () => {
+                if (reservations.length === 0) {
+                    showAlert('目前還沒有任何預約資料可以匯出喔！');
+                    return;
+                }
+
+                let icsContent = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Handdrawn Calendar//TW\r\nCALSCALE:GREGORIAN\r\n";
+                
+                reservations.forEach(res => {
+                    // 移除 - 和 : 符號，轉換為 YYYYMMDDTHHMMSS 格式 (Floating Time 當地時間)
+                    const startDt = res.startDate.replace(/-/g, '') + 'T' + res.startTime.replace(/:/g, '') + '00';
+                    const endDt = res.endDate.replace(/-/g, '') + 'T' + res.endTime.replace(/:/g, '') + '00';
+                    
+                    icsContent += "BEGIN:VEVENT\r\n";
+                    icsContent += `SUMMARY:【${res.venue}】${res.name} - ${res.reason}\r\n`;
+                    icsContent += `DTSTART:${startDt}\r\n`;
+                    icsContent += `DTEND:${endDt}\r\n`;
+                    icsContent += `DESCRIPTION:預約人：${res.name}\\n事由：${res.reason}\\n場地：${res.venue}\r\n`;
+                    icsContent += "END:VEVENT\r\n";
+                });
+                
+                icsContent += "END:VCALENDAR";
+
+                // 建立 blob 並觸發下載
+                const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
+                const link = document.createElement('a');
+                link.href = window.URL.createObjectURL(blob);
+                link.download = 'reservations.ics';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+
+                showAlert('📅 匯出成功！\n\n已下載「reservations.ics」檔案。\n\n請前往您的 Google 日曆：\n1. 點擊右上角「齒輪」進入設定\n2. 點選左側「匯入和匯出」\n3. 選擇剛剛下載的檔案即可一鍵同步全部行程！');
+            };
+
+            // 匯出成 Excel (CSV) 檔案，並依日期時間排序
+            const exportToExcel = () => {
+                if (reservations.length === 0) {
+                    showAlert('目前還沒有任何預約資料可以匯出喔！');
+                    return;
+                }
+
+                // 1. 依照開始日期與開始時間進行排序 (因為格式是 YYYY-MM-DD 與 HH:00，可以直接用字串比對)
+                const sortedReservations = [...reservations].sort((a, b) => {
+                    const dtA = a.startDate + a.startTime;
+                    const dtB = b.startDate + b.startTime;
+                    return dtA.localeCompare(dtB);
+                });
+
+                // 2. 準備 CSV 內容，加入 BOM (\uFEFF) 讓 Excel 能正確解析 UTF-8 中文
+                let csvContent = '\uFEFF';
+                csvContent += "開始日期,開始時間,結束日期,結束時間,場地,預約人,預約事由\n";
+
+                sortedReservations.forEach(res => {
+                    // 將字串中的雙引號替換成兩個雙引號，並用雙引號包起來，避免內容包含逗號時跑版
+                    const safeName = `"${res.name.replace(/"/g, '""')}"`;
+                    const safeReason = `"${res.reason.replace(/"/g, '""')}"`;
+                    const safeVenue = `"${res.venue.replace(/"/g, '""')}"`;
+
+                    csvContent += `${res.startDate},${res.startTime}:00,${res.endDate},${res.endTime}:00,${safeVenue},${safeName},${safeReason}\n`;
+                });
+
+                // 3. 建立 blob 並觸發下載
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const link = document.createElement('a');
+                link.href = window.URL.createObjectURL(blob);
+                link.download = 'reservations_data.csv';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+
+                showAlert('📊 匯出成功！\n\n已下載「reservations_data.csv」檔案。\n可以直接使用 Excel 或 Google 試算表開啟喔！');
+            };
+
+            // 月曆相關邏輯
+            const nextMonth = () => {
+                setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1));
+            };
+
+            const prevMonth = () => {
+                setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1));
+            };
+
+            // 產生當月日曆網格資料
+            const calendarDays = useMemo(() => {
+                const year = currentDate.getFullYear();
+                const month = currentDate.getMonth();
+                
+                const firstDay = new Date(year, month, 1);
+                const lastDay = new Date(year, month + 1, 0);
+                
+                const days = [];
+                
+                // 補齊前面的空白天數 (星期日為 0)
+                for (let i = 0; i < firstDay.getDay(); i++) {
+                    const prevDate = new Date(year, month, -i);
+                    days.unshift({ date: prevDate, isCurrentMonth: false });
+                }
+                
+                // 當月天數
+                for (let i = 1; i <= lastDay.getDate(); i++) {
+                    days.push({ date: new Date(year, month, i), isCurrentMonth: true });
+                }
+                
+                // 補齊後面的空白天數，讓日曆保持完整的矩形 (通常是 6 列 = 42 格)
+                const remainingCells = 42 - days.length;
+                for (let i = 1; i <= remainingCells; i++) {
+                    days.push({ date: new Date(year, month + 1, i), isCurrentMonth: false });
+                }
+                
+                return days;
+            }, [currentDate]);
+
+            // 檢查某個預約是否包含該日期 (改用字串比對，徹底避免時區與跨日判斷問題)
+            const isReservationOnDate = (res, targetDate) => {
+                const targetStr = formatDate(targetDate);
+                return targetStr >= res.startDate && targetStr <= res.endDate;
+            };
+
+            return (
+                <div className="space-y-8 pb-12">
+                    {/* --- 標題區 --- */}
+                    <div className="text-center mt-6 mb-8">
+                        <h1 className="text-4xl md:text-5xl font-bold text-slate-800 tracking-wider inline-block relative">
+                            行程預約白板
+                            <div className="absolute -bottom-2 left-0 w-full h-1 bg-slate-800 rounded-full opacity-70 transform -rotate-1"></div>
+                        </h1>
+                    </div>
+
+                    {/* --- 系統設定區 --- */}
+                    <div className="max-w-4xl mx-auto mb-6 flex justify-end items-center gap-2 px-4">
+                        <label className="font-bold text-slate-600">⚙️ 系統設定：每個場地同時段最高預約數</label>
+                        <select 
+                            value={maxCapacity} 
+                            onChange={(e) => setMaxCapacity(Number(e.target.value))} 
+                            className="sketchy-border-sm px-2 py-1 bg-white font-bold text-slate-800 outline-none"
+                        >
+                            {[1, 2, 3, 4, 5, 10].map(num => (
+                                <option key={num} value={num}>{num} 筆預約</option>
+                            ))}
+                        </select>
+                    </div>
+
+                    {/* --- 上方：基本資料及選取內容區 --- */}
+                    <div className="sketchy-border p-6 md:p-8 max-w-4xl mx-auto relative bg-white">
+                        <div className="absolute -top-4 -left-4 w-12 h-12 bg-red-400 rounded-full opacity-50 flex items-center justify-center transform -rotate-12">
+                            <span className="text-white font-bold text-xl">PIN</span>
+                        </div>
+                        
+                        <h2 className="text-2xl font-bold mb-6 text-slate-700 flex items-center">
+                            <span className="mr-2">✍️</span>
+                            {isEditing ? '修改預約資料' : '新增預約資料'}
+                        </h2>
+
+                        <form onSubmit={handleSubmit} className="space-y-6">
+                            {/* 基本資料：名字與事由 */}
+                            <div className="flex flex-col md:flex-row gap-4 items-start">
+                                <div className="w-full md:w-1/3">
+                                    <label className="block text-lg font-bold mb-2 text-slate-600">你的名字</label>
+                                    <input 
+                                        type="text" 
+                                        name="name"
+                                        value={formData.name}
+                                        onChange={handleInputChange}
+                                        placeholder="例如：王小明" 
+                                        className="sketchy-border-sm w-full px-4 py-2 text-xl"
+                                        required
+                                    />
+                                </div>
+                                <div className="w-full md:w-2/3">
+                                    <label className="block text-lg font-bold mb-2 text-slate-600">預約事由</label>
+                                    <input 
+                                        type="text" 
+                                        name="reason"
+                                        value={formData.reason}
+                                        onChange={handleInputChange}
+                                        placeholder="例如：專案開會、場地借用..." 
+                                        className="sketchy-border-sm w-full px-4 py-2 text-xl"
+                                        required
+                                    />
+                                </div>
+                            </div>
+
+                            {/* 場地與日期時間區 (使用 Grid 排版，分為三欄) */}
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 bg-slate-50 p-4 rounded-xl border-2 border-dashed border-slate-300">
+                                
+                                {/* 場地選擇 */}
+                                <div className="space-y-4 md:col-span-1">
+                                    <div>
+                                        <label className="block text-lg font-bold mb-1 text-blue-700">選擇場地</label>
+                                        <select 
+                                            name="venue"
+                                            value={formData.venue}
+                                            onChange={handleInputChange}
+                                            className="sketchy-border-sm w-full px-3 py-2 bg-white"
+                                        >
+                                            {VENUE_OPTIONS.map(v => (
+                                                <option key={v} value={v}>{v}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                    <div className="p-3 bg-blue-50 text-blue-800 text-sm rounded-lg sketchy-border-sm mt-4 hidden md:block">
+                                        💡 提示：<br/>
+                                        時間以<b>小時</b>為單位。<br/>
+                                        同一個場地同時段最多接受 <b>{maxCapacity}</b> 筆預約唷！
+                                    </div>
+                                </div>
+
+                                {/* 開始設定 */}
+                                <div className="space-y-4 md:col-span-1">
+                                    <div>
+                                        <label className="block text-lg font-bold mb-1 text-green-700">開始日期</label>
+                                        <input 
+                                            type="date" 
+                                            name="startDate"
+                                            value={formData.startDate}
+                                            onChange={handleInputChange}
+                                            className="sketchy-border-sm w-full px-3 py-2 bg-white"
+                                            required
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-lg font-bold mb-1 text-green-700">開始時間</label>
+                                        <div className="flex gap-2">
+                                            <select name="startAmpm" value={formData.startAmpm} onChange={handleInputChange} className="sketchy-border-sm px-1 py-2 flex-1 text-center bg-white">
+                                                <option value="AM">上午</option>
+                                                <option value="PM">下午</option>
+                                            </select>
+                                            <select name="startHour" value={formData.startHour} onChange={handleInputChange} className="sketchy-border-sm px-1 py-2 flex-1 text-center bg-white">
+                                                {Array.from({length: 12}, (_, i) => String(i + 1).padStart(2, '0')).map(h => <option key={h} value={h}>{h}時</option>)}
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* 結束設定 */}
+                                <div className="space-y-4 md:col-span-1">
+                                    <div>
+                                        <label className="block text-lg font-bold mb-1 text-red-700">結束日期</label>
+                                        <input 
+                                            type="date" 
+                                            name="endDate"
+                                            value={formData.endDate}
+                                            onChange={handleInputChange}
+                                            min={formData.startDate} // 限制不能早於開始日期
+                                            className="sketchy-border-sm w-full px-3 py-2 bg-white"
+                                            required
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-lg font-bold mb-1 text-red-700">結束時間</label>
+                                        <div className="flex gap-2">
+                                            <select name="endAmpm" value={formData.endAmpm} onChange={handleInputChange} className="sketchy-border-sm px-1 py-2 flex-1 text-center bg-white">
+                                                <option value="AM">上午</option>
+                                                <option value="PM">下午</option>
+                                            </select>
+                                            <select name="endHour" value={formData.endHour} onChange={handleInputChange} className="sketchy-border-sm px-1 py-2 flex-1 text-center bg-white">
+                                                {Array.from({length: 12}, (_, i) => String(i + 1).padStart(2, '0')).map(h => <option key={h} value={h}>{h}時</option>)}
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+
+                            </div>
+
+                            {/* 送出按鈕區 */}
+                            <div className="flex justify-center md:justify-end gap-4 mt-2">
+                                {isEditing && (
+                                    <button 
+                                        type="button" 
+                                        onClick={handleCancelEdit}
+                                        className="sketchy-btn sketchy-border-sm bg-gray-200 text-slate-700 font-bold text-xl px-8 py-2 w-full md:w-auto"
+                                    >
+                                        取消
+                                    </button>
+                                )}
+                                <button 
+                                    type="submit" 
+                                    className="sketchy-btn sketchy-border-sm bg-slate-800 text-white font-bold text-xl px-12 py-2 w-full md:w-auto"
+                                >
+                                    {isEditing ? '更新送出' : '確認預約！'}
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+
+                    {/* --- 下方：預約完成結果畫面 (月曆) --- */}
+                    <div className="max-w-6xl mx-auto mt-12">
+                        
+                        {/* 月曆控制列 & 匯出按鈕 */}
+                        <div className="flex flex-col md:flex-row items-center justify-between mb-4 px-4 gap-4">
+                            
+                            <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
+                                <button 
+                                    onClick={exportToICS} 
+                                    className="sketchy-btn sketchy-border-sm px-4 py-2 bg-blue-50 text-blue-800 font-bold flex items-center gap-2 hover:bg-blue-100 justify-center"
+                                >
+                                    <span className="text-xl">📅</span> Google 日曆
+                                </button>
+                                <button 
+                                    onClick={exportToExcel} 
+                                    className="sketchy-btn sketchy-border-sm px-4 py-2 bg-green-50 text-green-800 font-bold flex items-center gap-2 hover:bg-green-100 justify-center"
+                                >
+                                    <span className="text-xl">📊</span> 匯出 Excel
+                                </button>
+                            </div>
+                            
+                            <div className="flex items-center justify-between w-full md:w-auto gap-4">
+                                <button onClick={prevMonth} className="sketchy-btn sketchy-border-sm px-4 py-1 text-xl md:text-2xl font-bold bg-white">
+                                    &lt; 上個月
+                                </button>
+                                <h2 className="text-2xl md:text-3xl font-bold text-slate-800 whitespace-nowrap">
+                                    {currentDate.getFullYear()} 年 {currentDate.getMonth() + 1} 月
+                                </h2>
+                                <button onClick={nextMonth} className="sketchy-btn sketchy-border-sm px-4 py-1 text-xl md:text-2xl font-bold bg-white">
+                                    下個月 &gt;
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* 月曆主體 */}
+                        <div className="calendar-grid bg-white shadow-lg">
+                            {/* 星期標題 */}
+                            <div className="grid grid-cols-7 bg-slate-800 text-white border-b-4 border-slate-800">
+                                {['日', '一', '二', '三', '四', '五', '六'].map(day => (
+                                    <div key={day} className="py-3 text-center font-bold text-xl border-r border-slate-700 last:border-r-0">
+                                        星期{day}
+                                    </div>
+                                ))}
+                            </div>
+
+                            {/* 日期格子 */}
+                            <div className="grid grid-cols-7 bg-white">
+                                {calendarDays.map((dayObj, index) => {
+                                    // 找出這天的所有預約
+                                    const dayReservations = reservations.filter(res => isReservationOnDate(res, dayObj.date));
+                                    
+                                    // 照開始時間排序
+                                    dayReservations.sort((a, b) => a.startTime.localeCompare(b.startTime));
+
+                                    const isToday = formatDate(dayObj.date) === formatDate(new Date());
+
+                                    return (
+                                        <div 
+                                            key={index} 
+                                            className={`calendar-cell p-1 md:p-2 ${dayObj.isCurrentMonth ? '' : 'bg-gray-100 text-gray-400'} ${isToday ? 'bg-yellow-50' : ''}`}
+                                        >
+                                            {/* 日期數字 */}
+                                            <div className="flex justify-between items-start mb-1">
+                                                <span className={`font-bold text-lg inline-block w-8 h-8 text-center leading-8 rounded-full ${isToday ? 'bg-red-400 text-white' : ''}`}>
+                                                    {dayObj.date.getDate()}
+                                                </span>
+                                            </div>
+
+                                            {/* 預約便利貼列表 */}
+                                            <div className="space-y-1 mt-2">
+                                                {dayReservations.map(res => (
+                                                    <div 
+                                                        key={res.id}
+                                                        onClick={() => handlePinForEdit(res)}
+                                                        className="reservation-note text-sm p-1.5 px-2 relative group"
+                                                        style={{ backgroundColor: res.color }}
+                                                        title="點擊修改內容"
+                                                    >
+                                                        <div className="font-bold truncate text-slate-800 flex items-center justify-between">
+                                                            <span>{res.name}</span>
+                                                            <span className="text-[10px] bg-white/60 px-1 rounded sketchy-border-sm">{res.venue}</span>
+                                                        </div>
+                                                        <div className="text-sm truncate text-slate-800 font-medium mb-1">{res.reason}</div>
+                                                        <div className="text-xs text-slate-700 opacity-90 truncate">
+                                                            {/* 若跨日，顯示不同資訊 */}
+                                                            {res.startDate !== res.endDate ? (
+                                                                formatDate(dayObj.date) === res.startDate ? `起 ${res.startAmpm==='AM'?'上午':'下午'} ${res.startHour}:00` : 
+                                                                formatDate(dayObj.date) === res.endDate ? `止 ${res.endAmpm==='AM'?'上午':'下午'} ${res.endHour}:00` : '整天'
+                                                            ) : (
+                                                                `${res.startAmpm==='AM'?'上午':'下午'} ${res.startHour}:00 - ${res.endAmpm==='AM'?'上午':'下午'} ${res.endHour}:00`
+                                                            )}
+                                                        </div>
+                                                        {/* 隱藏的刪除小按鈕 */}
+                                                        <button 
+                                                            onClick={(e) => handlePinForDelete(res, e)}
+                                                            className="absolute -top-2 -right-2 bg-slate-800 text-white rounded-full w-5 h-5 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                                                            title="刪除"
+                                                        >
+                                                            ×
+                                                        </button>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                        
+                        <div className="mt-4 text-center text-slate-500 font-bold">
+                            💡 提示：直接點擊日曆上的預約項目（彩色便利貼），就可以把它拉回上方白板進行修改喔！
+                        </div>
+                    </div>
+
+                    {/* --- 自訂 Modal 彈窗 (支援身分驗證輸入) --- */}
+                    {dialog.isOpen && (
+                        <div className="fixed inset-0 bg-slate-900 bg-opacity-40 flex items-center justify-center z-50 px-4">
+                            <div className="bg-white p-6 md:p-8 rounded-2xl sketchy-border max-w-sm w-full shadow-2xl transform scale-100 transition-transform">
+                                <h3 className="text-2xl font-bold text-slate-800 mb-4">
+                                    {dialog.type === 'confirm' ? '🤔 請確認' : dialog.type === 'pin' ? '🔐 身分驗證' : dialog.type === 'show-pin' ? '🎉 預約成功' : '💡 提示'}
+                                </h3>
+                                
+                                {/* 允許支援換行 (\n) 顯示訊息 (一般模式) */}
+                                {dialog.type !== 'show-pin' && (
+                                    <div className="text-xl text-slate-600 mb-6 whitespace-pre-wrap leading-relaxed">
+                                        {dialog.message}
+                                    </div>
+                                )}
+
+                                {/* 顯示專屬確認碼與複製功能版面 */}
+                                {dialog.type === 'show-pin' && (
+                                    <div className="mb-6 text-slate-600">
+                                        <div className="text-xl whitespace-pre-wrap leading-relaxed mb-4">{dialog.message}</div>
+                                        <div className="flex items-center justify-center gap-4 bg-slate-100 p-4 rounded-xl sketchy-border-sm mb-4">
+                                            <span className="text-4xl font-bold tracking-[0.2em] text-slate-800">{dialog.pinToCopy}</span>
+                                            <button 
+                                                onClick={() => {
+                                                    copyToClipboard(dialog.pinToCopy);
+                                                    setIsCopied(true);
+                                                    setTimeout(() => setIsCopied(false), 2000); // 2秒後恢復原狀
+                                                }}
+                                                className={`sketchy-btn sketchy-border-sm px-4 py-2 font-bold text-md transition-colors ${isCopied ? 'bg-green-600 text-white' : 'bg-slate-800 text-white'}`}
+                                            >
+                                                {isCopied ? '已複製 ✓' : '複製'}
+                                            </button>
+                                        </div>
+                                        <div className="text-md text-red-600 font-bold whitespace-pre-wrap leading-relaxed">{dialog.warning}</div>
+                                    </div>
+                                )}
+
+                                {/* 密碼輸入框 */}
+                                {dialog.type === 'pin' && (
+                                    <div className="flex flex-col items-center">
+                                        <input 
+                                            type="text" 
+                                            value={pinInput}
+                                            onChange={(e) => setPinInput(e.target.value)}
+                                            placeholder="請輸入4碼數字"
+                                            className="sketchy-border-sm w-full px-4 py-2 text-2xl mb-4 text-center tracking-[0.5em] font-bold text-slate-700 bg-slate-50"
+                                            maxLength={4}
+                                        />
+                                        <div className="text-sm text-slate-500 text-center mb-6 w-full bg-yellow-50 p-3 rounded-lg sketchy-border-sm">
+                                            💡 <b>忘記確認碼？</b><br/>
+                                            使用原預約設備開啟，系統會自動為您填入。<br/>
+                                            或請聯繫管理員協助刪除。
+                                        </div>
+                                    </div>
+                                )}
+
+                                <div className="flex justify-end gap-3">
+                                    {(dialog.type === 'confirm' || dialog.type === 'pin') && (
+                                        <button 
+                                            onClick={() => setDialog({ ...dialog, isOpen: false })}
+                                            className="sketchy-btn sketchy-border-sm px-5 py-2 bg-gray-100 text-slate-700 font-bold text-lg"
+                                        >
+                                            取消
+                                        </button>
+                                    )}
+                                    <button 
+                                        onClick={() => {
+                                            if (dialog.type === 'pin') {
+                                                // 驗證輸入的確認碼是否符合 (加入 8888 萬用密碼作為管理員後門)
+                                                if (String(pinInput) === String(dialog.expectedPin) || String(pinInput) === "8888") {
+                                                    if (dialog.onConfirm) dialog.onConfirm();
+                                                    setDialog({ ...dialog, isOpen: false });
+                                                } else {
+                                                    // 密碼錯誤，直接顯示錯誤訊息
+                                                    setDialog({ isOpen: true, message: '❌ 確認碼錯誤！\n請重新確認後再試。', type: 'alert', onConfirm: null });
+                                                }
+                                            } else {
+                                                if (dialog.onConfirm) dialog.onConfirm();
+                                                setDialog({ ...dialog, isOpen: false });
+                                            }
+                                        }}
+                                        className="sketchy-btn sketchy-border-sm px-5 py-2 bg-slate-800 text-white font-bold text-lg"
+                                    >
+                                        確定
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
