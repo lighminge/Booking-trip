@@ -176,6 +176,7 @@
             const [teacherLocalNote, setTeacherLocalNote] = useState('');
             const [maxCapacity, setMaxCapacity] = useState(() => Number(localStorage.getItem('max_capacity')) || 3);
             const [isCapacityLocked, setIsCapacityLocked] = useState(() => localStorage.getItem('capacity_locked') === 'true');
+            const [isAttendanceOpen, setIsAttendanceOpen] = useState(false);
 
             // 家長專區狀態
             const [parentForm, setParentForm] = useState({ childName: '', venue: CLASS_OPTIONS[0], date: '', slotId: '' });
@@ -210,10 +211,6 @@
                 return days;
             }, [currentDate]);
 
-            const mySavedPins = useMemo(() => {
-                try { return JSON.parse(localStorage.getItem('my_reservation_pins') || '{}'); } catch(e) { return {}; }
-            }, [reservations]);
-
             // 安全空值處理，計算目前家長(同班級+同姓名)已預約數量
             const childNameTrimmed = (parentForm.childName || '').trim();
             const parentBookingsCount = useMemo(() => {
@@ -221,7 +218,32 @@
                 return reservations.filter(r => r.venue === parentForm.venue && (r.childName || r.name || '').trim() === childNameTrimmed).length;
             }, [reservations, parentForm.venue, childNameTrimmed]);
 
-            // 計算無效預約 (孤兒預約) - 將 Hooks 移至最上層以避免 Error #310
+            // 老師專用：浮動登記簿 (依小孩姓名去重複顯示)
+            const attendanceList = useMemo(() => {
+                if (role !== 'teacher') return [];
+                let res = reservations;
+                if (teacherSelectedClass !== '全部') {
+                    res = res.filter(r => r.venue === teacherSelectedClass);
+                }
+                
+                const grouped = {};
+                res.forEach(r => {
+                    const name = (r.childName || r.name || '未命名').trim();
+                    if (!grouped[name]) {
+                        grouped[name] = { name: name, slots: [], venues: new Set() };
+                    }
+                    grouped[name].slots.push(r);
+                    grouped[name].venues.add(r.venue);
+                });
+                
+                return Object.values(grouped).map(g => ({
+                    ...g,
+                    venues: Array.from(g.venues),
+                    slots: g.slots.sort((a, b) => (a.date + a.startTime).localeCompare(b.date + b.startTime))
+                })).sort((a, b) => a.name.localeCompare(b.name));
+            }, [reservations, teacherSelectedClass, role]);
+
+            // 計算無效預約 (孤兒預約)
             const orphanedReservations = useMemo(() => {
                 if (role !== 'teacher') return [];
                 return reservations.filter(res => {
@@ -234,7 +256,7 @@
                 }).sort((a, b) => (a.date + a.startTime).localeCompare(b.date + b.startTime));
             }, [reservations, classSettings, teacherSelectedClass, role]);
 
-            // 取得可用的家長預約日期與時段 - 將 Hooks 移至最上層
+            // 取得可用的家長預約日期與時段
             const currentParentSettings = classSettings[parentForm.venue] || DEFAULT_CLASS_SETTINGS[parentForm.venue] || { slots: [], maxCapacity: 3, maxPerParent: 999, duration: 60 };
             
             const availableDates = useMemo(() => {
@@ -243,6 +265,8 @@
             }, [currentParentSettings.slots]);
 
             useEffect(() => { setParentForm(prev => ({ ...prev, slotId: '' })); }, [parentForm.date, parentForm.venue]);
+            
+            // 只要日期或班級選擇變更，自動帶入第一個日期
             useEffect(() => {
                 if (availableDates.length > 0 && !parentForm.date) {
                     setParentForm(prev => ({ ...prev, date: availableDates[0] }));
@@ -259,6 +283,18 @@
                     return { ...slot, bookedCount, remaining };
                 });
             }, [currentParentSettings, parentForm.date, parentForm.venue, reservations]);
+
+            // 自動為家長帶入第一個還有剩餘名額的時段
+            useEffect(() => {
+                if (availableSlotsForDate.length > 0 && !parentForm.slotId) {
+                    const firstAvail = availableSlotsForDate.find(s => s.remaining > 0);
+                    if (firstAvail) {
+                        setParentForm(prev => ({ ...prev, slotId: firstAvail.id }));
+                    } else {
+                        setParentForm(prev => ({ ...prev, slotId: availableSlotsForDate[0].id }));
+                    }
+                }
+            }, [availableSlotsForDate, parentForm.slotId]);
 
 
             const showAlert = (message) => setDialog({ isOpen: true, message, type: 'alert', onConfirm: null });
@@ -668,9 +704,9 @@
                                                     const slotReservations = reservations.filter(r => r.venue === slot.className && r.date === slot.date && r.startTime === slot.startTime);
                                                     const isFull = slotReservations.length >= maxCap;
 
+                                                    // 完全獨立：只有身分被鎖定，且名字一致時，才顯示為自己的預約。
                                                     const myRes = slotReservations.find(r => 
-                                                        (viewRole === 'parent' && isParentLocked && (r.childName || r.name || '').trim() === childNameTrimmed && r.venue === parentForm.venue) || 
-                                                        mySavedPins[r.id] === r.pin
+                                                        viewRole === 'parent' && isParentLocked && (r.childName || r.name || '').trim() === childNameTrimmed && r.venue === slot.className
                                                     );
 
                                                     return (
@@ -764,6 +800,49 @@
                             <h3 className="text-xl font-bold text-yellow-800 mb-1">⚠️ 目前為「單機離線模式」</h3>
                             <p className="text-yellow-700 text-sm">因雲端權限設定未完成，資料暫存於瀏覽器中。請老師至 Firebase Console 修改設定喔！</p>
                         </div>
+                    )}
+
+                    {/* 老師專用：左側浮動登記簿 */}
+                    {role === 'teacher' && (
+                        <>
+                            <div className={`fixed left-0 top-1/4 z-40 transition-transform duration-300 ${isAttendanceOpen ? '-translate-x-full' : 'translate-x-0'}`}>
+                                <button onClick={() => setIsAttendanceOpen(true)} className="sketchy-btn bg-yellow-100 text-yellow-900 border-2 border-l-0 border-slate-800 font-bold py-3 px-2 rounded-r-xl shadow-md flex flex-col items-center gap-1">
+                                    <span className="text-xl">📋</span>
+                                    <span className="text-sm font-bold flex flex-col"><span>登</span><span>記</span><span>簿</span></span>
+                                </button>
+                            </div>
+
+                            <div className={`fixed left-0 top-16 bottom-16 w-64 md:w-72 bg-white border-2 border-l-0 border-slate-800 rounded-r-2xl shadow-2xl z-40 flex flex-col transition-transform duration-300 ${isAttendanceOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+                                <div className="p-3 border-b-2 border-dashed border-slate-300 flex justify-between items-center bg-yellow-100 rounded-tr-xl">
+                                    <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2">📋 預約點名簿</h3>
+                                    <button onClick={() => setIsAttendanceOpen(false)} className="text-slate-500 hover:text-slate-800 text-2xl font-bold px-2 leading-none">&times;</button>
+                                </div>
+                                <div className="p-3 bg-slate-50 text-sm font-bold text-slate-700 text-center border-b border-slate-200">
+                                    {teacherSelectedClass === '全部' ? '🌈 全部班級' : `【${teacherSelectedClass}】`}
+                                    <br/>
+                                    已完成登記：<span className="text-2xl text-blue-600 mx-1">{attendanceList.length}</span>位小孩
+                                </div>
+                                <div className="flex-1 overflow-y-auto p-3 space-y-3 no-scrollbar bg-slate-50/50">
+                                    {attendanceList.length === 0 ? (
+                                        <div className="text-center text-slate-400 py-6 font-bold text-sm">目前尚無預約資料</div>
+                                    ) : (
+                                        attendanceList.map((child, idx) => (
+                                            <div key={child.name} className="bg-white p-3 rounded-lg sketchy-border-sm text-sm shadow-sm relative hover:bg-blue-50 transition-colors">
+                                                <div className="font-bold text-slate-800 text-base mb-1">{idx + 1}. {child.name}</div>
+                                                <div className="space-y-1 mt-2">
+                                                    {child.slots.map(s => (
+                                                        <div key={s.id} className="text-slate-600 text-xs font-medium bg-slate-100 p-1.5 rounded">
+                                                            📅 {s.date} 🕒 {s.startTime}~{s.endTime}
+                                                            {teacherSelectedClass === '全部' && <span className="ml-1 text-blue-600 font-bold">({s.venue})</span>}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        ))
+                                    )}
+                                </div>
+                            </div>
+                        </>
                     )}
 
                     <div className="text-center mt-6 mb-8">
