@@ -15,12 +15,12 @@
     <!-- 引入 Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
 
-    <!-- 改用 Firebase Compat CDN，解決 GitHub Pages 上的白畫面衝突 -->
+    <!-- 改用 Firebase Compat CDN -->
     <script src="https://www.gstatic.com/firebasejs/10.10.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.10.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.10.0/firebase-firestore-compat.js"></script>
     
-    <!-- 引入 Google Fonts: Kalam (手寫風) -->
+    <!-- 引入 Google Fonts: Kalam -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Kalam:wght@300;400;700&display=swap" rel="stylesheet">
@@ -54,12 +54,12 @@
         input:focus, textarea:focus {
             background-color: #fdfbf7;
         }
-        .sketchy-btn:hover {
+        .sketchy-btn:hover:not(:disabled) {
             transform: translate(-2px, -2px);
             box-shadow: 6px 6px 0px rgba(0,0,0,0.15);
             border-radius: 15px 255px 15px 225px/225px 15px 255px 15px;
         }
-        .sketchy-btn:active {
+        .sketchy-btn:active:not(:disabled) {
             transform: translate(2px, 2px);
             box-shadow: 1px 1px 0px rgba(0,0,0,0.1);
         }
@@ -131,8 +131,26 @@
         // --- 工具函數與常數區 ---
         const CLASS_OPTIONS = ['🐻 小熊班', '🐧 企鵝班', '⭐ 星星班', '☀️ 太陽班', '❄️ 雪花班', '☁️ 白雲班'];
         
+        const formatDate = (date) => {
+            const d = new Date(date);
+            let month = '' + (d.getMonth() + 1);
+            let day = '' + d.getDate();
+            const year = d.getFullYear();
+            if (month.length < 2) month = '0' + month;
+            if (day.length < 2) day = '0' + day;
+            return [year, month, day].join('-');
+        };
+
         const DEFAULT_CLASS_SETTINGS = CLASS_OPTIONS.reduce((acc, c) => {
-            acc[c] = { maxCapacity: 3, maxPerParent: 999, duration: 60, notes: '歡迎家長預約，請準時抵達喔！', slots: [] };
+            acc[c] = { 
+                purpose: '親師座談會', 
+                deadline: formatDate(new Date(Date.now() + 14 * 24 * 60 * 60 * 1000)), // 預設截止日為兩週後
+                maxPerParent: 999, 
+                duration: 60, 
+                notes: '歡迎家長預約，請準時抵達喔！', 
+                slots: [],
+                boardData: null // 獨立的一份最終排班資料
+            };
             return acc;
         }, {});
 
@@ -142,16 +160,6 @@
             let hash = 0;
             for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
             return pastelColors[Math.abs(hash) % pastelColors.length];
-        };
-
-        const formatDate = (date) => {
-            const d = new Date(date);
-            let month = '' + (d.getMonth() + 1);
-            let day = '' + d.getDate();
-            const year = d.getFullYear();
-            if (month.length < 2) month = '0' + month;
-            if (day.length < 2) day = '0' + day;
-            return [year, month, day].join('-');
         };
 
         const addMinutes = (timeStr, mins) => {
@@ -171,11 +179,11 @@
             
             // 老師專區狀態
             const [teacherSelectedClass, setTeacherSelectedClass] = useState(CLASS_OPTIONS[0]);
+            const [teacherActiveTab, setTeacherActiveTab] = useState('settings'); // 'settings' 或 'board'
             const [teacherSlotForm, setTeacherSlotForm] = useState({ id: null, date: formatDate(new Date()), startHour: '09', startMin: '00', endHour: '10', endMin: '00' });
             const [isEditingSlot, setIsEditingSlot] = useState(false);
             const [teacherLocalNote, setTeacherLocalNote] = useState('');
-            const [maxCapacity, setMaxCapacity] = useState(() => Number(localStorage.getItem('max_capacity')) || 3);
-            const [isCapacityLocked, setIsCapacityLocked] = useState(() => localStorage.getItem('capacity_locked') === 'true');
+            const [teacherLocalPurpose, setTeacherLocalPurpose] = useState('');
             const [isAttendanceOpen, setIsAttendanceOpen] = useState(false);
 
             // 家長專區狀態
@@ -188,14 +196,16 @@
             const [pinInput, setPinInput] = useState('');
             const [isCopied, setIsCopied] = useState(false);
 
-            // 同步老師備註欄位
+            // 同步老師備註與目的欄位
             useEffect(() => {
                 if (teacherSelectedClass === '全部') {
                     setTeacherLocalNote('');
+                    setTeacherLocalPurpose('');
                     return;
                 }
                 const currentSets = classSettings[teacherSelectedClass] || DEFAULT_CLASS_SETTINGS[teacherSelectedClass] || {};
                 setTeacherLocalNote(currentSets.notes || '');
+                setTeacherLocalPurpose(currentSets.purpose || '親師座談會');
             }, [classSettings, teacherSelectedClass]);
 
             const calendarDays = useMemo(() => {
@@ -211,14 +221,17 @@
                 return days;
             }, [currentDate]);
 
-            // 安全空值處理，計算目前家長(同班級+同姓名)已預約數量
+            const mySavedPins = useMemo(() => {
+                try { return JSON.parse(localStorage.getItem('my_reservation_pins') || '{}'); } catch(e) { return {}; }
+            }, [reservations]);
+
             const childNameTrimmed = (parentForm.childName || '').trim();
             const parentBookingsCount = useMemo(() => {
                 if (!childNameTrimmed) return 0;
                 return reservations.filter(r => r.venue === parentForm.venue && (r.childName || r.name || '').trim() === childNameTrimmed).length;
             }, [reservations, parentForm.venue, childNameTrimmed]);
 
-            // 老師專用：浮動登記簿 (依小孩姓名去重複顯示)
+            // 老師專用：浮動登記簿 (依小孩姓名去重複顯示，並標示總預約數)
             const attendanceList = useMemo(() => {
                 if (role !== 'teacher') return [];
                 let res = reservations;
@@ -256,46 +269,38 @@
                 }).sort((a, b) => (a.date + a.startTime).localeCompare(b.date + b.startTime));
             }, [reservations, classSettings, teacherSelectedClass, role]);
 
-            // 取得可用的家長預約日期與時段
-            const currentParentSettings = classSettings[parentForm.venue] || DEFAULT_CLASS_SETTINGS[parentForm.venue] || { slots: [], maxCapacity: 3, maxPerParent: 999, duration: 60 };
+            const currentParentSettings = classSettings[parentForm.venue] || DEFAULT_CLASS_SETTINGS[parentForm.venue] || { slots: [], maxPerParent: 999, duration: 60 };
             
             const availableDates = useMemo(() => {
                 const slots = currentParentSettings.slots || [];
                 return [...new Set(slots.map(s => s.date))].sort();
             }, [currentParentSettings.slots]);
 
-            useEffect(() => { setParentForm(prev => ({ ...prev, slotId: '' })); }, [parentForm.date, parentForm.venue]);
-            
-            // 只要日期或班級選擇變更，自動帶入第一個日期
+            // 當日期選項更新時，如果還沒有選擇日期，或是目前選的日期不在可用清單中，自動選擇第一個
             useEffect(() => {
-                if (availableDates.length > 0 && !parentForm.date) {
-                    setParentForm(prev => ({ ...prev, date: availableDates[0] }));
+                if (availableDates.length > 0) {
+                    if (!parentForm.date || !availableDates.includes(parentForm.date)) {
+                        setParentForm(prev => ({ ...prev, date: availableDates[0], slotId: '' }));
+                    }
+                } else {
+                    setParentForm(prev => ({ ...prev, date: '', slotId: '' }));
                 }
-            }, [availableDates]);
+            }, [availableDates, parentForm.date]);
 
+            // 無上限容量！所有符合日期的 slot 皆可用。
             const availableSlotsForDate = useMemo(() => {
                 if (!parentForm.date) return [];
-                const slots = (currentParentSettings.slots || []).filter(s => s.date === parentForm.date).sort((a,b)=>a.startTime.localeCompare(b.startTime));
-                
-                return slots.map(slot => {
-                    const bookedCount = reservations.filter(r => r.venue === parentForm.venue && r.date === slot.date && r.startTime === slot.startTime).length;
-                    const remaining = currentParentSettings.maxCapacity - bookedCount;
-                    return { ...slot, bookedCount, remaining };
-                });
-            }, [currentParentSettings, parentForm.date, parentForm.venue, reservations]);
+                return (currentParentSettings.slots || [])
+                    .filter(s => s.date === parentForm.date)
+                    .sort((a,b)=>a.startTime.localeCompare(b.startTime));
+            }, [currentParentSettings, parentForm.date]);
 
-            // 自動為家長帶入第一個還有剩餘名額的時段
+            // 確保第一個時段自動被選取
             useEffect(() => {
-                if (availableSlotsForDate.length > 0 && !parentForm.slotId) {
-                    const firstAvail = availableSlotsForDate.find(s => s.remaining > 0);
-                    if (firstAvail) {
-                        setParentForm(prev => ({ ...prev, slotId: firstAvail.id }));
-                    } else {
-                        setParentForm(prev => ({ ...prev, slotId: availableSlotsForDate[0].id }));
-                    }
+                if (availableSlotsForDate.length > 0 && (!parentForm.slotId || !availableSlotsForDate.find(s => s.id === parentForm.slotId))) {
+                    setParentForm(prev => ({ ...prev, slotId: availableSlotsForDate[0].id }));
                 }
             }, [availableSlotsForDate, parentForm.slotId]);
-
 
             const showAlert = (message) => setDialog({ isOpen: true, message, type: 'alert', onConfirm: null });
             const showConfirm = (message, onConfirm) => setDialog({ isOpen: true, message, type: 'confirm', onConfirm });
@@ -491,12 +496,73 @@
                 window.scrollTo({ top: 0, behavior: 'smooth' });
             };
 
+            // 排班板 (Board) 專用邏輯
+            const handleLoadBoardData = () => {
+                if (teacherSelectedClass === '全部') return showAlert("請先選擇單一班級來進行排班喔！");
+                showConfirm("確定要載入最新的家長預約資料到排班板嗎？\n\n(注意：這會覆蓋您目前排班板上的舊進度喔！)", () => {
+                    const currentRes = reservations.filter(r => r.venue === teacherSelectedClass);
+                    updateClassSetting('boardData', currentRes);
+                    showAlert("✅ 已成功載入最新預約資料至排班板！");
+                });
+            };
+
+            const handleBoardDragStart = (e, resId) => {
+                e.dataTransfer.setData('resId', resId);
+            };
+
+            const handleBoardDrop = (e, targetSlot) => {
+                e.preventDefault();
+                const resId = e.dataTransfer.getData('resId');
+                if (!resId) return;
+
+                const currentSettings = classSettings[teacherSelectedClass] || {};
+                const newBoardData = (currentSettings.boardData || []).map(r => {
+                    if (r.id === resId) {
+                        return { ...r, date: targetSlot.date, startTime: targetSlot.startTime, endTime: targetSlot.endTime };
+                    }
+                    return r;
+                });
+                updateClassSetting('boardData', newBoardData);
+            };
+
+            const handleBoardDeleteRes = (resId) => {
+                const currentSettings = classSettings[teacherSelectedClass] || {};
+                const newBoardData = (currentSettings.boardData || []).filter(r => r.id !== resId);
+                updateClassSetting('boardData', newBoardData);
+            };
+
+            const exportBoardToExcel = () => {
+                const currentSettings = classSettings[teacherSelectedClass] || {};
+                const bData = currentSettings.boardData || [];
+                if (bData.length === 0) return showAlert('目前排班板上沒有資料可以匯出喔！');
+                
+                const sorted = [...bData].sort((a, b) => (a.date + a.startTime).localeCompare(b.date + b.startTime));
+                let csvContent = '\uFEFF預約日期,時段,班級,小孩姓名\n';
+                sorted.forEach(res => {
+                    const rName = res.childName || res.name || '未命名';
+                    const safeName = `"${rName.replace(/"/g, '""')}"`;
+                    const safeVenue = `"${res.venue.replace(/"/g, '""')}"`;
+                    csvContent += `${res.date},${res.startTime}~${res.endTime},${safeVenue},${safeName}\n`;
+                });
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const link = document.createElement('a');
+                link.href = window.URL.createObjectURL(blob);
+                link.download = `最終排班表_${teacherSelectedClass}.csv`;
+                document.body.appendChild(link); link.click(); document.body.removeChild(link);
+                showAlert('📊 匯出成功！\n已下載最終排班表 Excel 檔案。');
+            };
+
             // ==========================================
             // 家長專屬方法
             // ==========================================
             const handleParentSubmit = (e) => {
                 if (e) e.preventDefault(); 
                 
+                const todayStr = formatDate(new Date());
+                if (currentParentSettings.deadline && todayStr > currentParentSettings.deadline) {
+                     return showAlert("⚠️ 預約失敗！\n\n此活動已經超過預約截止日期囉！無法再進行預約。");
+                }
+
                 if (!parentForm.slotId) return showAlert("請選擇一個預約時段！");
 
                 const selectedSlot = availableSlotsForDate.find(s => s.id === parentForm.slotId);
@@ -518,8 +584,6 @@
                     setParentForm(prev => ({ ...prev, slotId: '' }));
                     return showAlert(`⚠️ 預約失敗！\n\n【${childNameTrimmed}】在該班級已達到最高預約上限（共 ${currentParentSettings.maxPerParent} 個時段）。`);
                 }
-
-                if (selectedSlot.remaining <= 0) return showAlert("⚠️ 很抱歉，這個時段已經額滿了，請選擇其他時段喔！");
 
                 setIsSubmitting(true);
                 const currentPin = Math.floor(1000 + Math.random() * 9000).toString();
@@ -700,17 +764,15 @@
                                             
                                             <div className="space-y-2 mt-1 h-24 overflow-y-auto no-scrollbar">
                                                 {dailySlots.map((slot, sIdx) => {
-                                                    const maxCap = (classSettings[slot.className] || DEFAULT_CLASS_SETTINGS[slot.className] || {}).maxCapacity || 3;
                                                     const slotReservations = reservations.filter(r => r.venue === slot.className && r.date === slot.date && r.startTime === slot.startTime);
-                                                    const isFull = slotReservations.length >= maxCap;
 
-                                                    // 完全獨立：只有身分被鎖定，且名字一致時，才顯示為自己的預約。
                                                     const myRes = slotReservations.find(r => 
-                                                        viewRole === 'parent' && isParentLocked && (r.childName || r.name || '').trim() === childNameTrimmed && r.venue === slot.className
+                                                        (viewRole === 'parent' && isParentLocked && (r.childName || r.name || '').trim() === childNameTrimmed && r.venue === parentForm.venue) || 
+                                                        mySavedPins[r.id] === r.pin
                                                     );
 
                                                     return (
-                                                        <div key={sIdx} className="text-xs p-1 rounded sketchy-border-sm border border-slate-300 relative group" style={{ backgroundColor: isFull ? '#fee2e2' : '#f0fdf4' }}>
+                                                        <div key={sIdx} className="text-xs p-1 rounded sketchy-border-sm border border-slate-300 relative group bg-green-50">
                                                             {/* 老師視角 */}
                                                             {viewRole === 'teacher' && (
                                                                 <>
@@ -721,9 +783,6 @@
                                                                     >
                                                                         <span>{slot.className}</span>
                                                                         <span className="text-[10px] bg-white px-1 rounded sketchy-border-sm">{slot.startTime}</span>
-                                                                    </div>
-                                                                    <div className="text-[10px] text-slate-600 mt-1">
-                                                                        已預約 {slotReservations.length}/{maxCap}
                                                                     </div>
                                                                     {slotReservations.map(r => (
                                                                         <div key={r.id} className="truncate text-slate-800 bg-white/60 p-0.5 rounded mt-0.5 cursor-pointer hover:bg-red-100 transition-colors" title={`點擊刪除 ${r.childName || r.name || '未命名'} 的預約`} onClick={() => handleCancelRes(r.id, r.pin)}>
@@ -744,7 +803,7 @@
                                                                         </div>
                                                                     ) : (
                                                                         <div className="text-center mt-1 text-slate-600 font-medium">
-                                                                            剩餘名額: {maxCap - slotReservations.length}
+                                                                            開放預約中
                                                                         </div>
                                                                     )}
                                                                 </>
@@ -783,9 +842,6 @@
                                             </button>
                                         </div>
                                     ))}
-                                </div>
-                                <div className="mt-3 text-sm text-red-600 font-bold">
-                                    💡 這些預約因為您刪除了對應的開放時段，所以無法顯示在上方月曆中。您可以點擊「刪除紀錄」按鈕將它們清除。
                                 </div>
                             </div>
                         )}
@@ -828,7 +884,9 @@
                                     ) : (
                                         attendanceList.map((child, idx) => (
                                             <div key={child.name} className="bg-white p-3 rounded-lg sketchy-border-sm text-sm shadow-sm relative hover:bg-blue-50 transition-colors">
-                                                <div className="font-bold text-slate-800 text-base mb-1">{idx + 1}. {child.name}</div>
+                                                <div className="font-bold text-slate-800 text-base mb-1">
+                                                    {idx + 1}. {child.name} <span className="text-blue-600 text-xs">(共 {child.slots.length} 筆)</span>
+                                                </div>
                                                 <div className="space-y-1 mt-2">
                                                     {child.slots.map(s => (
                                                         <div key={s.id} className="text-slate-600 text-xs font-medium bg-slate-100 p-1.5 rounded">
@@ -855,9 +913,7 @@
                     {!role && (
                         <div className="max-w-2xl mx-auto flex flex-col md:flex-row gap-6 mt-12 px-4">
                             <button 
-                                onClick={() => {
-                                    showPinPrompt('請輸入管理員密碼以進入老師專區：', '8888', () => setRole('teacher'), 'admin');
-                                }} 
+                                onClick={() => setRole('teacher')} 
                                 className="sketchy-border sketchy-btn flex-1 p-10 bg-white flex flex-col items-center justify-center gap-4 group"
                             >
                                 <span className="text-6xl group-hover:scale-110 transition-transform">👨‍🏫</span>
@@ -877,110 +933,210 @@
                     {role === 'teacher' && (
                         <div className="space-y-6">
                             <div className="flex flex-col md:flex-row items-center justify-between gap-4 mb-4">
-                                <h2 className="text-3xl font-bold text-slate-800">👨‍🏫 老師管理控制台</h2>
-                                <button onClick={() => setRole(null)} className="sketchy-btn sketchy-border-sm px-4 py-2 bg-slate-200 font-bold">登出回首頁</button>
+                                <div className="flex gap-2">
+                                    <button onClick={() => setTeacherActiveTab('settings')} className={`px-4 py-2 font-bold text-lg rounded-t-lg transition-colors ${teacherActiveTab==='settings' ? 'bg-slate-800 text-white' : 'bg-slate-200 text-slate-600 hover:bg-slate-300'}`}>⚙️ 開放時段與設定</button>
+                                    <button onClick={() => setTeacherActiveTab('board')} className={`px-4 py-2 font-bold text-lg rounded-t-lg transition-colors ${teacherActiveTab==='board' ? 'bg-slate-800 text-white' : 'bg-slate-200 text-slate-600 hover:bg-slate-300'}`}>🧩 最終排班安排</button>
+                                </div>
+                                <button onClick={() => { setRole(null); setTeacherActiveTab('settings'); }} className="sketchy-btn sketchy-border-sm px-4 py-2 bg-slate-200 font-bold">登出回首頁</button>
                             </div>
 
-                            <div className="sketchy-border p-6 bg-white relative">
-                                <div className="flex flex-col md:flex-row gap-6">
-                                    <div className="w-full md:w-1/2 space-y-4">
+                            {teacherActiveTab === 'settings' ? (
+                                <>
+                                    <div className="sketchy-border p-6 bg-white relative">
+                                        <div className="flex flex-col md:flex-row gap-6">
+                                            <div className="w-full md:w-1/2 space-y-4">
+                                                <div>
+                                                    <label className="block text-lg font-bold mb-1 text-slate-700">1. 選擇要管理的班級</label>
+                                                    <select 
+                                                        value={teacherSelectedClass} 
+                                                        onChange={e => setTeacherSelectedClass(e.target.value)} 
+                                                        className="sketchy-border-sm w-full px-3 py-2 bg-yellow-50 text-xl font-bold"
+                                                    >
+                                                        <option value="全部">🌈 檢視全部班級 (僅供下方月曆查詢)</option>
+                                                        {CLASS_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
+                                                    </select>
+                                                </div>
+
+                                                {teacherSelectedClass !== '全部' && (
+                                                    <>
+                                                        <div className="flex flex-wrap gap-4">
+                                                            <div className="flex-1 min-w-[120px]">
+                                                                <label className="block text-sm md:text-md font-bold mb-1 text-slate-600">預約目的</label>
+                                                                <input 
+                                                                    type="text" 
+                                                                    value={teacherLocalPurpose} 
+                                                                    onChange={e => setTeacherLocalPurpose(e.target.value)} 
+                                                                    onBlur={e => updateClassSetting('purpose', teacherLocalPurpose)}
+                                                                    className="sketchy-border-sm w-full px-2 py-2" 
+                                                                    placeholder="例：親師座談會" 
+                                                                />
+                                                            </div>
+                                                            <div className="flex-1 min-w-[120px]">
+                                                                <label className="block text-sm md:text-md font-bold mb-1 text-slate-600">預約截止日期</label>
+                                                                <input 
+                                                                    type="date" 
+                                                                    value={(classSettings[teacherSelectedClass] || DEFAULT_CLASS_SETTINGS[teacherSelectedClass] || {}).deadline || ''} 
+                                                                    onChange={e => updateClassSetting('deadline', e.target.value)} 
+                                                                    className="sketchy-border-sm w-full px-2 py-2" 
+                                                                />
+                                                            </div>
+                                                            <div className="flex-1 min-w-[120px]">
+                                                                <label className="block text-sm md:text-md font-bold mb-1 text-slate-600">每人預約總數</label>
+                                                                <select value={(classSettings[teacherSelectedClass] || DEFAULT_CLASS_SETTINGS[teacherSelectedClass] || {}).maxPerParent} onChange={e => updateClassSetting('maxPerParent', Number(e.target.value))} className="sketchy-border-sm w-full px-1 py-2">
+                                                                    {[1,2,3,4,5,10].map(n => <option key={n} value={n}>{n} 個時段</option>)}
+                                                                    <option value={999}>不限</option>
+                                                                </select>
+                                                            </div>
+                                                            <div className="flex-1 min-w-[120px]">
+                                                                <label className="block text-sm md:text-md font-bold mb-1 text-slate-600">時段切割方式</label>
+                                                                <select value={(classSettings[teacherSelectedClass] || DEFAULT_CLASS_SETTINGS[teacherSelectedClass] || {}).duration} onChange={e => updateClassSetting('duration', Number(e.target.value))} className="sketchy-border-sm w-full px-1 py-2">
+                                                                    <option value={30}>每半小時 (30分)</option>
+                                                                    <option value={60}>每小時 (60分)</option>
+                                                                </select>
+                                                            </div>
+                                                        </div>
+                                                        <div>
+                                                            <label className="block text-md font-bold mb-1 text-slate-600">家長注意事項 (顯示於家長端)</label>
+                                                            <textarea 
+                                                                value={teacherLocalNote} 
+                                                                onChange={e => setTeacherLocalNote(e.target.value)} 
+                                                                onBlur={e => updateClassSetting('notes', teacherLocalNote)}
+                                                                className="sketchy-border-sm w-full px-3 py-2 h-20 text-sm"
+                                                                placeholder="例如：請記得戴口罩、準時抵達..."
+                                                            />
+                                                        </div>
+                                                    </>
+                                                )}
+                                            </div>
+
+                                            {teacherSelectedClass !== '全部' && (
+                                                <div className="w-full md:w-1/2 bg-blue-50 p-4 sketchy-border-sm rounded-xl space-y-4">
+                                                    <h3 className="font-bold text-blue-800 text-lg">2. {isEditingSlot ? '修改可預約時段' : '新增可預約時段 (開放給家長選)'}</h3>
+                                                    <div>
+                                                        <label className="block text-sm font-bold text-slate-600">選擇日期</label>
+                                                        <input type="date" value={teacherSlotForm.date} onChange={e => setTeacherSlotForm({...teacherSlotForm, date: e.target.value})} className="sketchy-border-sm w-full px-2 py-1 bg-white" />
+                                                    </div>
+                                                    <div className="flex gap-2 items-end">
+                                                        <div className="flex-1">
+                                                            <label className="block text-sm font-bold text-slate-600">開始時間 (24H)</label>
+                                                            <div className="flex gap-1">
+                                                                <select name="startHour" value={teacherSlotForm.startHour} onChange={handleTeacherStartChange} className="sketchy-border-sm px-1 py-1 flex-1 bg-white">
+                                                                    {Array.from({length:24}, (_,i)=>String(i).padStart(2,'0')).map(h=><option key={h} value={h}>{h}時</option>)}
+                                                                </select>
+                                                                <select name="startMin" value={teacherSlotForm.startMin} onChange={handleTeacherStartChange} className="sketchy-border-sm px-1 py-1 flex-1 bg-white">
+                                                                    <option value="00">00分</option><option value="30">30分</option>
+                                                                </select>
+                                                            </div>
+                                                        </div>
+                                                        <span className="font-bold pb-2">至</span>
+                                                        <div className="flex-1">
+                                                            <label className="block text-sm font-bold text-slate-600">結束時間 (24H)</label>
+                                                            <div className="flex gap-1">
+                                                                <select value={teacherSlotForm.endHour} onChange={e => setTeacherSlotForm({...teacherSlotForm, endHour: e.target.value})} className="sketchy-border-sm px-1 py-1 flex-1 bg-white">
+                                                                    {Array.from({length:24}, (_,i)=>String(i).padStart(2,'0')).map(h=><option key={h} value={h}>{h}時</option>)}
+                                                                </select>
+                                                                <select value={teacherSlotForm.endMin} onChange={e => setTeacherSlotForm({...teacherSlotForm, endMin: e.target.value})} className="sketchy-border-sm px-1 py-1 flex-1 bg-white">
+                                                                    <option value="00">00分</option><option value="30">30分</option>
+                                                                </select>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    
+                                                    {isEditingSlot ? (
+                                                        <div className="flex gap-2 mt-2">
+                                                            <button onClick={handleAddSlots} className="sketchy-btn sketchy-border-sm flex-1 py-2 bg-slate-800 text-white font-bold">更新時段</button>
+                                                            <button onClick={() => { setIsEditingSlot(false); setTeacherSlotForm({...teacherSlotForm, id: null}); }} className="sketchy-btn sketchy-border-sm px-4 py-2 bg-gray-200 text-slate-700 font-bold">取消</button>
+                                                        </div>
+                                                    ) : (
+                                                        <button onClick={handleAddSlots} className="sketchy-btn sketchy-border-sm w-full py-2 bg-slate-800 text-white font-bold mt-2">產生開放時段</button>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                    
+                                    {renderCalendarView('teacher', teacherSelectedClass)}
+                                </>
+                            ) : (
+                                // --- 排班板 (Board Tab) ---
+                                <div className="sketchy-border p-6 bg-white space-y-6">
+                                    <div className="flex flex-col md:flex-row items-center justify-between gap-4 bg-blue-50 p-4 rounded-xl sketchy-border-sm">
                                         <div>
-                                            <label className="block text-lg font-bold mb-1 text-slate-700">1. 選擇要管理的班級</label>
+                                            <h3 className="text-xl font-bold text-blue-800">🧩 最終安排排班板</h3>
+                                            <p className="text-sm text-blue-700 font-medium">請選擇班級後，載入最新的預約資料進行拖曳排班。<br/>此處的修改是獨立的一份，不會影響到原本的家長預約紀錄喔！</p>
+                                        </div>
+                                        <div className="flex flex-col sm:flex-row gap-2">
                                             <select 
                                                 value={teacherSelectedClass} 
                                                 onChange={e => setTeacherSelectedClass(e.target.value)} 
-                                                className="sketchy-border-sm w-full px-3 py-2 bg-yellow-50 text-xl font-bold"
+                                                className="sketchy-border-sm px-3 py-2 bg-white text-lg font-bold"
                                             >
-                                                <option value="全部">🌈 檢視全部班級 (僅供下方月曆查詢)</option>
                                                 {CLASS_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
                                             </select>
+                                            <button onClick={handleLoadBoardData} className="sketchy-btn sketchy-border-sm px-4 py-2 bg-blue-600 text-white font-bold whitespace-nowrap">
+                                                📥 載入最新家長預約
+                                            </button>
+                                            <button onClick={exportBoardToExcel} className="sketchy-btn sketchy-border-sm px-4 py-2 bg-green-600 text-white font-bold flex items-center gap-2 whitespace-nowrap">
+                                                <span>📊</span> 匯出最終排班表
+                                            </button>
                                         </div>
-
-                                        {teacherSelectedClass !== '全部' && (
-                                            <>
-                                                <div className="flex flex-wrap gap-4">
-                                                    <div className="flex-1 min-w-[120px]">
-                                                        <label className="block text-sm md:text-md font-bold mb-1 text-slate-600">同時段最高預約</label>
-                                                        <select value={(classSettings[teacherSelectedClass] || DEFAULT_CLASS_SETTINGS[teacherSelectedClass] || {}).maxCapacity} onChange={e => updateClassSetting('maxCapacity', Number(e.target.value))} className="sketchy-border-sm w-full px-1 py-2">
-                                                            {[1,2,3,4,5,10,15,20].map(n => <option key={n} value={n}>{n} 人</option>)}
-                                                        </select>
-                                                    </div>
-                                                    <div className="flex-1 min-w-[120px]">
-                                                        <label className="block text-sm md:text-md font-bold mb-1 text-slate-600">每人預約總數</label>
-                                                        <select value={(classSettings[teacherSelectedClass] || DEFAULT_CLASS_SETTINGS[teacherSelectedClass] || {}).maxPerParent} onChange={e => updateClassSetting('maxPerParent', Number(e.target.value))} className="sketchy-border-sm w-full px-1 py-2">
-                                                            {[1,2,3,4,5,10].map(n => <option key={n} value={n}>{n} 個時段</option>)}
-                                                            <option value={999}>不限</option>
-                                                        </select>
-                                                    </div>
-                                                    <div className="flex-1 min-w-[120px]">
-                                                        <label className="block text-sm md:text-md font-bold mb-1 text-slate-600">時段切割方式</label>
-                                                        <select value={(classSettings[teacherSelectedClass] || DEFAULT_CLASS_SETTINGS[teacherSelectedClass] || {}).duration} onChange={e => updateClassSetting('duration', Number(e.target.value))} className="sketchy-border-sm w-full px-1 py-2">
-                                                            <option value={30}>每半小時 (30分)</option>
-                                                            <option value={60}>每小時 (60分)</option>
-                                                        </select>
-                                                    </div>
-                                                </div>
-                                                <div>
-                                                    <label className="block text-md font-bold mb-1 text-slate-600">家長注意事項 (顯示於家長端)</label>
-                                                    <textarea 
-                                                        value={teacherLocalNote} 
-                                                        onChange={e => setTeacherLocalNote(e.target.value)} 
-                                                        onBlur={e => updateClassSetting('notes', teacherLocalNote)}
-                                                        className="sketchy-border-sm w-full px-3 py-2 h-20 text-sm"
-                                                        placeholder="例如：請記得戴口罩、準時抵達..."
-                                                    />
-                                                </div>
-                                            </>
-                                        )}
                                     </div>
 
-                                    {teacherSelectedClass !== '全部' && (
-                                        <div className="w-full md:w-1/2 bg-blue-50 p-4 sketchy-border-sm rounded-xl space-y-4">
-                                            <h3 className="font-bold text-blue-800 text-lg">2. {isEditingSlot ? '修改可預約時段' : '新增可預約時段 (開放給家長選)'}</h3>
-                                            <div>
-                                                <label className="block text-sm font-bold text-slate-600">選擇日期</label>
-                                                <input type="date" value={teacherSlotForm.date} onChange={e => setTeacherSlotForm({...teacherSlotForm, date: e.target.value})} className="sketchy-border-sm w-full px-2 py-1 bg-white" />
-                                            </div>
-                                            <div className="flex gap-2 items-end">
-                                                <div className="flex-1">
-                                                    <label className="block text-sm font-bold text-slate-600">開始時間 (24H)</label>
-                                                    <div className="flex gap-1">
-                                                        <select name="startHour" value={teacherSlotForm.startHour} onChange={handleTeacherStartChange} className="sketchy-border-sm px-1 py-1 flex-1 bg-white">
-                                                            {Array.from({length:24}, (_,i)=>String(i).padStart(2,'0')).map(h=><option key={h} value={h}>{h}時</option>)}
-                                                        </select>
-                                                        <select name="startMin" value={teacherSlotForm.startMin} onChange={handleTeacherStartChange} className="sketchy-border-sm px-1 py-1 flex-1 bg-white">
-                                                            <option value="00">00分</option><option value="30">30分</option>
-                                                        </select>
-                                                    </div>
-                                                </div>
-                                                <span className="font-bold pb-2">至</span>
-                                                <div className="flex-1">
-                                                    <label className="block text-sm font-bold text-slate-600">結束時間 (24H)</label>
-                                                    <div className="flex gap-1">
-                                                        <select value={teacherSlotForm.endHour} onChange={e => setTeacherSlotForm({...teacherSlotForm, endHour: e.target.value})} className="sketchy-border-sm px-1 py-1 flex-1 bg-white">
-                                                            {Array.from({length:24}, (_,i)=>String(i).padStart(2,'0')).map(h=><option key={h} value={h}>{h}時</option>)}
-                                                        </select>
-                                                        <select value={teacherSlotForm.endMin} onChange={e => setTeacherSlotForm({...teacherSlotForm, endMin: e.target.value})} className="sketchy-border-sm px-1 py-1 flex-1 bg-white">
-                                                            <option value="00">00分</option><option value="30">30分</option>
-                                                        </select>
-                                                    </div>
-                                                </div>
-                                            </div>
+                                    <div className="flex gap-4 overflow-x-auto pb-4 pt-2 no-scrollbar">
+                                        {(() => {
+                                            const cSet = classSettings[teacherSelectedClass] || {};
+                                            const boardSlots = [...(cSet.slots || [])].sort((a,b) => (a.date+a.startTime).localeCompare(b.date+b.startTime));
+                                            const bData = cSet.boardData || [];
                                             
-                                            {isEditingSlot ? (
-                                                <div className="flex gap-2 mt-2">
-                                                    <button onClick={handleAddSlots} className="sketchy-btn sketchy-border-sm flex-1 py-2 bg-slate-800 text-white font-bold">更新時段</button>
-                                                    <button onClick={() => { setIsEditingSlot(false); setTeacherSlotForm({...teacherSlotForm, id: null}); }} className="sketchy-btn sketchy-border-sm px-4 py-2 bg-gray-200 text-slate-700 font-bold">取消</button>
-                                                </div>
-                                            ) : (
-                                                <button onClick={handleAddSlots} className="sketchy-btn sketchy-border-sm w-full py-2 bg-slate-800 text-white font-bold mt-2">產生開放時段</button>
-                                            )}
-                                        </div>
-                                    )}
+                                            if (boardSlots.length === 0) return <div className="text-slate-400 font-bold p-4 w-full text-center">目前班級尚未開放任何時段。</div>;
+
+                                            return boardSlots.map(slot => {
+                                                const cards = bData.filter(r => r.date === slot.date && r.startTime === slot.startTime);
+                                                const isConflict = cards.length > 1;
+                                                const isBest = cards.length === 1 && (bData.filter(r => r.childName === cards[0].childName).length > 1);
+
+                                                return (
+                                                    <div
+                                                        key={slot.id}
+                                                        className={`min-w-[260px] p-3 rounded-xl sketchy-border-sm flex flex-col ${isConflict ? 'bg-red-50 border-red-400 border-4' : 'bg-slate-50'}`}
+                                                        onDragOver={e => e.preventDefault()}
+                                                        onDrop={e => handleBoardDrop(e, slot)}
+                                                    >
+                                                        <div className="text-center font-bold border-b-2 border-slate-200 pb-2 mb-3">
+                                                            <div className="text-lg text-slate-800">{slot.date}</div>
+                                                            <div className="text-blue-700 bg-white px-2 py-1 rounded-full sketchy-border-sm mt-1 inline-block">{slot.startTime} ~ {slot.endTime}</div>
+                                                        </div>
+                                                        {isConflict && <div className="text-xs bg-red-100 text-red-600 font-bold text-center mb-3 py-1 rounded sketchy-border-sm animate-pulse">⚠️ 衝突！請協調移開 (共 {cards.length} 人)</div>}
+                                                        <div className="flex-1 space-y-3 min-h-[100px]">
+                                                            {cards.map(card => {
+                                                                const isOnlyChoice = bData.filter(r => r.childName === card.childName).length === 1;
+                                                                return (
+                                                                    <div
+                                                                        key={card.id}
+                                                                        draggable
+                                                                        onDragStart={e => handleBoardDragStart(e, card.id)}
+                                                                        className={`p-3 rounded-lg shadow-sm cursor-grab active:cursor-grabbing sketchy-border-sm relative group ${isOnlyChoice ? 'bg-yellow-50 border-yellow-300' : 'bg-white'}`}
+                                                                    >
+                                                                        <div className="font-bold text-slate-800 text-lg mb-1 pr-6">{card.childName || card.name || '未命名'}</div>
+                                                                        
+                                                                        {isOnlyChoice && <div className="mt-1 mb-1 text-[11px] bg-yellow-400 text-yellow-900 px-1.5 py-0.5 rounded inline-block font-bold shadow-sm">⭐ 該小孩的最佳選取時段</div>}
+                                                                        
+                                                                        <button onClick={() => handleBoardDeleteRes(card.id)} className="absolute top-2 right-2 text-slate-400 hover:text-red-500 font-bold px-1.5 py-0.5 bg-slate-100 hover:bg-red-100 rounded transition-colors opacity-0 group-hover:opacity-100" title="刪除此紀錄">×</button>
+                                                                    </div>
+                                                                )
+                                                            })}
+                                                        </div>
+                                                    </div>
+                                                );
+                                            });
+                                        })()}
+                                    </div>
+                                    
+                                    <div className="text-slate-500 font-bold text-sm text-center">
+                                        💡 提示：按住小孩的卡片拖曳到其他格子即可排班！有標示「⭐ 最佳選取時段」代表這是該名小孩唯一有選的時段，建議優先保留給他喔！
+                                    </div>
                                 </div>
-                            </div>
-                            
-                            {renderCalendarView('teacher', teacherSelectedClass)}
+                            )}
                         </div>
                     )}
 
@@ -995,6 +1151,18 @@
                                 <form onSubmit={handleParentSubmit} className="space-y-6">
                                     <div className="flex flex-col md:flex-row gap-6">
                                         <div className="w-full md:w-1/2 space-y-4">
+                                            
+                                            <div className="bg-orange-50 border-l-4 border-orange-400 p-3 sketchy-border-sm">
+                                                <div className="font-bold text-orange-800 text-lg">📢 {currentParentSettings.purpose || '預約活動'}</div>
+                                                {currentParentSettings.deadline && <div className="text-sm text-orange-700 font-bold mt-1">⏳ 預約截止日：{currentParentSettings.deadline}</div>}
+                                                {currentParentSettings.notes && (
+                                                    <div className="mt-2 pt-2 border-t border-orange-200">
+                                                        <div className="font-bold text-orange-800 flex items-center gap-1"><span>📌</span> 老師叮嚀：</div>
+                                                        <div className="text-sm text-orange-700 whitespace-pre-wrap">{currentParentSettings.notes}</div>
+                                                    </div>
+                                                )}
+                                            </div>
+
                                             <div>
                                                 <label className="block text-lg font-bold mb-1 text-slate-700">1. 選擇小孩的班級</label>
                                                 <select 
@@ -1007,13 +1175,6 @@
                                                 </select>
                                             </div>
                                             
-                                            {(classSettings[parentForm.venue] || DEFAULT_CLASS_SETTINGS[parentForm.venue] || {}).notes && (
-                                                <div className="bg-orange-50 border-l-4 border-orange-400 p-3 sketchy-border-sm">
-                                                    <div className="font-bold text-orange-800 flex items-center gap-1"><span>📌</span> 老師叮嚀：</div>
-                                                    <div className="text-sm text-orange-700 whitespace-pre-wrap">{(classSettings[parentForm.venue] || DEFAULT_CLASS_SETTINGS[parentForm.venue] || {}).notes}</div>
-                                                </div>
-                                            )}
-
                                             <div>
                                                 <label className="block text-lg font-bold mb-1 text-slate-700">2. 填寫小孩姓名</label>
                                                 <input 
@@ -1067,10 +1228,10 @@
                                                         <div>
                                                             <label className="block text-sm font-bold text-slate-600 mb-1">預約時間</label>
                                                             <select value={parentForm.slotId} onChange={e => setParentForm({...parentForm, slotId: e.target.value})} className="sketchy-border-sm w-full px-3 py-2 bg-white font-bold text-slate-800">
-                                                                <option value="" disabled>-- 請選擇時段 --</option>
+                                                                <option value="" disabled>-- 請先選擇上方日期 --</option>
                                                                 {availableSlotsForDate.map(slot => (
-                                                                    <option key={slot.id} value={slot.id} disabled={slot.remaining <= 0}>
-                                                                        {slot.startTime} ~ {slot.endTime} (已預約 {slot.bookedCount} / 剩餘 {slot.remaining})
+                                                                    <option key={slot.id} value={slot.id}>
+                                                                        {slot.startTime} ~ {slot.endTime}
                                                                     </option>
                                                                 ))}
                                                             </select>
