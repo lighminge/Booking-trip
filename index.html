@@ -1125,11 +1125,12 @@
                                                             {slotsForDate.map(slot => {
                                                                 const cards = bData.filter(r => r.date === slot.date && r.startTime === slot.startTime);
                                                                 const isConflict = cards.length > 1;
+                                                                const isBestChoice = cards.length === 1;
 
                                                                 return (
                                                                     <div 
                                                                         key={`${slot.date}_${slot.startTime}`}
-                                                                        className={`p-3 rounded-lg sketchy-border-sm flex flex-col ${isConflict ? 'bg-red-100 border-red-400 border-2' : 'bg-white'}`}
+                                                                        className={`p-3 rounded-lg sketchy-border-sm flex flex-col ${isConflict ? 'bg-red-100 border-red-400 border-2' : isBestChoice ? 'bg-green-50 border-green-400 border-2' : 'bg-white'}`}
                                                                         onDragOver={e => e.preventDefault()}
                                                                         onDrop={e => handleBoardDrop(e, slot)}
                                                                     >
@@ -1141,16 +1142,15 @@
                                                                         {isConflict && <div className="text-xs bg-red-200 text-red-700 font-bold text-center mb-2 py-1 rounded animate-pulse">⚠️ 衝突！請協調移開 (共 {cards.length} 人)</div>}
                                                                         <div className="flex-1 space-y-2 min-h-[60px]">
                                                                             {cards.map(card => {
-                                                                                const isOnlyChoice = bData.filter(r => r.childName === card.childName).length === 1;
                                                                                 return (
                                                                                     <div
                                                                                         key={card.id}
                                                                                         draggable
                                                                                         onDragStart={e => handleBoardDragStart(e, card.id)}
-                                                                                        className={`p-2 rounded shadow-sm cursor-grab active:cursor-grabbing border relative group ${isOnlyChoice ? 'bg-yellow-50 border-yellow-400' : 'bg-slate-50 border-slate-200'}`}
+                                                                                        className={`p-2 rounded shadow-sm cursor-grab active:cursor-grabbing border relative group ${isBestChoice ? 'bg-yellow-50 border-yellow-400 shadow-md' : 'bg-slate-50 border-slate-200'}`}
                                                                                     >
                                                                                         <div className="font-bold text-slate-800 text-base pr-6">{card.childName || card.name || '未命名'}</div>
-                                                                                        {isOnlyChoice && <div className="mt-1 text-[10px] bg-yellow-400 text-yellow-900 px-1 py-0.5 rounded inline-block font-bold">⭐ 最佳選取時段</div>}
+                                                                                        {isBestChoice && <div className="mt-1 text-[11px] bg-green-600 text-white px-1.5 py-0.5 rounded inline-block font-bold shadow-sm">⭐ 該小孩的最佳選取時段</div>}
                                                                                         <button onClick={() => handleBoardDeleteRes(card.id)} className="absolute top-1 right-1 text-slate-400 hover:text-red-500 font-bold w-5 h-5 flex items-center justify-center bg-white hover:bg-red-100 rounded-full transition-colors opacity-0 group-hover:opacity-100 border border-slate-200" title="刪除此紀錄">×</button>
                                                                                     </div>
                                                                                 )
@@ -1166,8 +1166,8 @@
                                         })()}
                                     </div>
                                     
-                                    <div className="text-slate-500 font-bold text-sm text-center">
-                                        💡 提示：按住小孩的卡片拖曳到其他格子即可排班！有標示「⭐ 最佳選取時段」代表這是該名小孩唯一有選的時段，建議優先保留給他喔！
+                                    <div className="text-slate-500 font-bold text-sm text-center mt-2">
+                                        💡 提示：按住小孩的卡片拖曳到其他格子即可排班！<br/>如果某個時段只有一位小孩，系統會自動標示為「⭐ 該小孩的最佳選取時段」，建議優先保留給他喔！
                                     </div>
                                 </div>
                             )}
