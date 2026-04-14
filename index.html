@@ -231,7 +231,7 @@
                 return reservations.filter(r => r.venue === parentForm.venue && (r.childName || r.name || '').trim() === childNameTrimmed).length;
             }, [reservations, parentForm.venue, childNameTrimmed]);
 
-            // 老師專用：浮動登記簿 (依小孩姓名去重複顯示，並標示總預約數)
+            // 老師專用：浮動登記簿
             const attendanceList = useMemo(() => {
                 if (role !== 'teacher') return [];
                 let res = reservations;
@@ -276,7 +276,8 @@
                 return [...new Set(slots.map(s => s.date))].sort();
             }, [currentParentSettings.slots]);
 
-            // 當日期選項更新時，如果還沒有選擇日期，或是目前選的日期不在可用清單中，自動選擇第一個
+            useEffect(() => { setParentForm(prev => ({ ...prev, slotId: '' })); }, [parentForm.date, parentForm.venue]);
+            
             useEffect(() => {
                 if (availableDates.length > 0) {
                     if (!parentForm.date || !availableDates.includes(parentForm.date)) {
@@ -287,7 +288,6 @@
                 }
             }, [availableDates, parentForm.date]);
 
-            // 無上限容量！所有符合日期的 slot 皆可用。
             const availableSlotsForDate = useMemo(() => {
                 if (!parentForm.date) return [];
                 return (currentParentSettings.slots || [])
@@ -295,12 +295,12 @@
                     .sort((a,b)=>a.startTime.localeCompare(b.startTime));
             }, [currentParentSettings, parentForm.date]);
 
-            // 確保第一個時段自動被選取
             useEffect(() => {
                 if (availableSlotsForDate.length > 0 && (!parentForm.slotId || !availableSlotsForDate.find(s => s.id === parentForm.slotId))) {
                     setParentForm(prev => ({ ...prev, slotId: availableSlotsForDate[0].id }));
                 }
             }, [availableSlotsForDate, parentForm.slotId]);
+
 
             const showAlert = (message) => setDialog({ isOpen: true, message, type: 'alert', onConfirm: null });
             const showConfirm = (message, onConfirm) => setDialog({ isOpen: true, message, type: 'confirm', onConfirm });
@@ -537,7 +537,7 @@
                 if (bData.length === 0) return showAlert('目前排班板上沒有資料可以匯出喔！');
                 
                 const sorted = [...bData].sort((a, b) => (a.date + a.startTime).localeCompare(b.date + b.startTime));
-                let csvContent = '\uFEFF預約日期,時段,班級,小孩姓名\n';
+                let csvContent = '\uFEFF排班日期,時段,班級,小孩姓名\n';
                 sorted.forEach(res => {
                     const rName = res.childName || res.name || '未命名';
                     const safeName = `"${rName.replace(/"/g, '""')}"`;
@@ -913,7 +913,9 @@
                     {!role && (
                         <div className="max-w-2xl mx-auto flex flex-col md:flex-row gap-6 mt-12 px-4">
                             <button 
-                                onClick={() => setRole('teacher')} 
+                                onClick={() => {
+                                    showPinPrompt('請輸入管理員密碼以進入老師專區：', '8888', () => setRole('teacher'), 'admin');
+                                }} 
                                 className="sketchy-border sketchy-btn flex-1 p-10 bg-white flex flex-col items-center justify-center gap-4 group"
                             >
                                 <span className="text-6xl group-hover:scale-110 transition-transform">👨‍🏫</span>
@@ -1082,48 +1084,88 @@
                                         </div>
                                     </div>
 
-                                    <div className="flex gap-4 overflow-x-auto pb-4 pt-2 no-scrollbar">
+                                    <div className="flex gap-4 overflow-x-auto pb-4 pt-2 no-scrollbar items-start">
                                         {(() => {
                                             const cSet = classSettings[teacherSelectedClass] || {};
-                                            const boardSlots = [...(cSet.slots || [])].sort((a,b) => (a.date+a.startTime).localeCompare(b.date+b.startTime));
                                             const bData = cSet.boardData || [];
                                             
-                                            if (boardSlots.length === 0) return <div className="text-slate-400 font-bold p-4 w-full text-center">目前班級尚未開放任何時段。</div>;
+                                            // 收集所有在設定中與備份資料中存在的日期
+                                            const allDatesSet = new Set([
+                                                ...(cSet.slots || []).map(s => s.date),
+                                                ...bData.map(r => r.date)
+                                            ]);
+                                            const allDates = Array.from(allDatesSet).sort();
 
-                                            return boardSlots.map(slot => {
-                                                const cards = bData.filter(r => r.date === slot.date && r.startTime === slot.startTime);
-                                                const isConflict = cards.length > 1;
-                                                const isBest = cards.length === 1 && (bData.filter(r => r.childName === cards[0].childName).length > 1);
+                                            if (allDates.length === 0) return <div className="text-slate-400 font-bold p-4 w-full text-center">目前沒有任何時段或預約資料。</div>;
+
+                                            return allDates.map(date => {
+                                                const slotsForDate = [];
+                                                const slotMap = new Map();
+                                                
+                                                (cSet.slots || []).forEach(s => {
+                                                    if (s.date === date) {
+                                                        const key = `${s.startTime}-${s.endTime}`;
+                                                        if (!slotMap.has(key)) {
+                                                            slotMap.set(key, s);
+                                                            slotsForDate.push(s);
+                                                        }
+                                                    }
+                                                });
+                                                
+                                                bData.forEach(r => {
+                                                    if (r.date === date) {
+                                                        const key = `${r.startTime}-${r.endTime}`;
+                                                        if (!slotMap.has(key)) {
+                                                            const newSlot = { date: r.date, startTime: r.startTime, endTime: r.endTime, id: `orphaned_${key}` };
+                                                            slotMap.set(key, newSlot);
+                                                            slotsForDate.push(newSlot);
+                                                        }
+                                                    }
+                                                });
+                                                slotsForDate.sort((a,b) => a.startTime.localeCompare(b.startTime));
 
                                                 return (
-                                                    <div
-                                                        key={slot.id}
-                                                        className={`min-w-[260px] p-3 rounded-xl sketchy-border-sm flex flex-col ${isConflict ? 'bg-red-50 border-red-400 border-4' : 'bg-slate-50'}`}
-                                                        onDragOver={e => e.preventDefault()}
-                                                        onDrop={e => handleBoardDrop(e, slot)}
-                                                    >
-                                                        <div className="text-center font-bold border-b-2 border-slate-200 pb-2 mb-3">
-                                                            <div className="text-lg text-slate-800">{slot.date}</div>
-                                                            <div className="text-blue-700 bg-white px-2 py-1 rounded-full sketchy-border-sm mt-1 inline-block">{slot.startTime} ~ {slot.endTime}</div>
+                                                    <div key={date} className="min-w-[320px] bg-slate-100 p-4 rounded-xl sketchy-border-sm flex flex-col">
+                                                        <div className="text-center font-black text-2xl text-slate-800 border-b-2 border-slate-300 pb-2 mb-4">
+                                                            📅 {date}
                                                         </div>
-                                                        {isConflict && <div className="text-xs bg-red-100 text-red-600 font-bold text-center mb-3 py-1 rounded sketchy-border-sm animate-pulse">⚠️ 衝突！請協調移開 (共 {cards.length} 人)</div>}
-                                                        <div className="flex-1 space-y-3 min-h-[100px]">
-                                                            {cards.map(card => {
-                                                                const isOnlyChoice = bData.filter(r => r.childName === card.childName).length === 1;
+                                                        <div className="flex-1 space-y-4">
+                                                            {slotsForDate.map(slot => {
+                                                                const cards = bData.filter(r => r.date === slot.date && r.startTime === slot.startTime);
+                                                                const isConflict = cards.length > 1;
+
                                                                 return (
-                                                                    <div
-                                                                        key={card.id}
-                                                                        draggable
-                                                                        onDragStart={e => handleBoardDragStart(e, card.id)}
-                                                                        className={`p-3 rounded-lg shadow-sm cursor-grab active:cursor-grabbing sketchy-border-sm relative group ${isOnlyChoice ? 'bg-yellow-50 border-yellow-300' : 'bg-white'}`}
+                                                                    <div 
+                                                                        key={`${slot.date}_${slot.startTime}`}
+                                                                        className={`p-3 rounded-lg sketchy-border-sm flex flex-col ${isConflict ? 'bg-red-100 border-red-400 border-2' : 'bg-white'}`}
+                                                                        onDragOver={e => e.preventDefault()}
+                                                                        onDrop={e => handleBoardDrop(e, slot)}
                                                                     >
-                                                                        <div className="font-bold text-slate-800 text-lg mb-1 pr-6">{card.childName || card.name || '未命名'}</div>
-                                                                        
-                                                                        {isOnlyChoice && <div className="mt-1 mb-1 text-[11px] bg-yellow-400 text-yellow-900 px-1.5 py-0.5 rounded inline-block font-bold shadow-sm">⭐ 該小孩的最佳選取時段</div>}
-                                                                        
-                                                                        <button onClick={() => handleBoardDeleteRes(card.id)} className="absolute top-2 right-2 text-slate-400 hover:text-red-500 font-bold px-1.5 py-0.5 bg-slate-100 hover:bg-red-100 rounded transition-colors opacity-0 group-hover:opacity-100" title="刪除此紀錄">×</button>
+                                                                        <div className="text-center font-bold mb-2">
+                                                                            <span className="text-blue-700 bg-blue-50 px-2 py-1 rounded-full text-sm border border-blue-200">
+                                                                                🕒 {slot.startTime} ~ {slot.endTime}
+                                                                            </span>
+                                                                        </div>
+                                                                        {isConflict && <div className="text-xs bg-red-200 text-red-700 font-bold text-center mb-2 py-1 rounded animate-pulse">⚠️ 衝突！請協調移開 (共 {cards.length} 人)</div>}
+                                                                        <div className="flex-1 space-y-2 min-h-[60px]">
+                                                                            {cards.map(card => {
+                                                                                const isOnlyChoice = bData.filter(r => r.childName === card.childName).length === 1;
+                                                                                return (
+                                                                                    <div
+                                                                                        key={card.id}
+                                                                                        draggable
+                                                                                        onDragStart={e => handleBoardDragStart(e, card.id)}
+                                                                                        className={`p-2 rounded shadow-sm cursor-grab active:cursor-grabbing border relative group ${isOnlyChoice ? 'bg-yellow-50 border-yellow-400' : 'bg-slate-50 border-slate-200'}`}
+                                                                                    >
+                                                                                        <div className="font-bold text-slate-800 text-base pr-6">{card.childName || card.name || '未命名'}</div>
+                                                                                        {isOnlyChoice && <div className="mt-1 text-[10px] bg-yellow-400 text-yellow-900 px-1 py-0.5 rounded inline-block font-bold">⭐ 最佳選取時段</div>}
+                                                                                        <button onClick={() => handleBoardDeleteRes(card.id)} className="absolute top-1 right-1 text-slate-400 hover:text-red-500 font-bold w-5 h-5 flex items-center justify-center bg-white hover:bg-red-100 rounded-full transition-colors opacity-0 group-hover:opacity-100 border border-slate-200" title="刪除此紀錄">×</button>
+                                                                                    </div>
+                                                                                )
+                                                                            })}
+                                                                        </div>
                                                                     </div>
-                                                                )
+                                                                );
                                                             })}
                                                         </div>
                                                     </div>
@@ -1147,22 +1189,21 @@
                                 <button onClick={() => setRole(null)} className="sketchy-btn sketchy-border-sm px-4 py-2 bg-slate-200 font-bold">登出回首頁</button>
                             </div>
 
+                            {/* 目的與截止日期 醒目橫幅 */}
+                            <div className="text-center mb-8 bg-orange-50 p-6 rounded-2xl sketchy-border border-orange-300">
+                                <h2 className="text-4xl md:text-5xl font-black text-orange-600 mb-3 tracking-wide">{currentParentSettings.purpose || '預約活動'}</h2>
+                                {currentParentSettings.deadline && (
+                                    <p className="text-xl md:text-2xl font-bold text-red-600 bg-white inline-block px-4 py-1 rounded-full border-2 border-red-200 shadow-sm">
+                                        ⏳ 預約截止日期：{currentParentSettings.deadline}
+                                    </p>
+                                )}
+                            </div>
+
                             <div className="sketchy-border p-6 bg-white relative">
                                 <form onSubmit={handleParentSubmit} className="space-y-6">
                                     <div className="flex flex-col md:flex-row gap-6">
                                         <div className="w-full md:w-1/2 space-y-4">
                                             
-                                            <div className="bg-orange-50 border-l-4 border-orange-400 p-3 sketchy-border-sm">
-                                                <div className="font-bold text-orange-800 text-lg">📢 {currentParentSettings.purpose || '預約活動'}</div>
-                                                {currentParentSettings.deadline && <div className="text-sm text-orange-700 font-bold mt-1">⏳ 預約截止日：{currentParentSettings.deadline}</div>}
-                                                {currentParentSettings.notes && (
-                                                    <div className="mt-2 pt-2 border-t border-orange-200">
-                                                        <div className="font-bold text-orange-800 flex items-center gap-1"><span>📌</span> 老師叮嚀：</div>
-                                                        <div className="text-sm text-orange-700 whitespace-pre-wrap">{currentParentSettings.notes}</div>
-                                                    </div>
-                                                )}
-                                            </div>
-
                                             <div>
                                                 <label className="block text-lg font-bold mb-1 text-slate-700">1. 選擇小孩的班級</label>
                                                 <select 
@@ -1175,6 +1216,13 @@
                                                 </select>
                                             </div>
                                             
+                                            {currentParentSettings.notes && (
+                                                <div className="bg-blue-50 border-l-4 border-blue-400 p-3 sketchy-border-sm">
+                                                    <div className="font-bold text-blue-800 flex items-center gap-1"><span>📌</span> 老師叮嚀：</div>
+                                                    <div className="text-sm text-blue-700 whitespace-pre-wrap">{currentParentSettings.notes}</div>
+                                                </div>
+                                            )}
+
                                             <div>
                                                 <label className="block text-lg font-bold mb-1 text-slate-700">2. 填寫小孩姓名</label>
                                                 <input 
@@ -1222,13 +1270,14 @@
                                                         <div>
                                                             <label className="block text-sm font-bold text-slate-600 mb-1">預約日期</label>
                                                             <select value={parentForm.date} onChange={e => setParentForm({...parentForm, date: e.target.value})} className="sketchy-border-sm w-full px-3 py-2 bg-white font-bold">
+                                                                <option value="" disabled>-- 請先選擇日期 --</option>
                                                                 {availableDates.map(d => <option key={d} value={d}>{d}</option>)}
                                                             </select>
                                                         </div>
                                                         <div>
                                                             <label className="block text-sm font-bold text-slate-600 mb-1">預約時間</label>
                                                             <select value={parentForm.slotId} onChange={e => setParentForm({...parentForm, slotId: e.target.value})} className="sketchy-border-sm w-full px-3 py-2 bg-white font-bold text-slate-800">
-                                                                <option value="" disabled>-- 請先選擇上方日期 --</option>
+                                                                <option value="" disabled>-- 請選擇時段 --</option>
                                                                 {availableSlotsForDate.map(slot => (
                                                                     <option key={slot.id} value={slot.id}>
                                                                         {slot.startTime} ~ {slot.endTime}
