@@ -144,12 +144,12 @@
         const DEFAULT_CLASS_SETTINGS = CLASS_OPTIONS.reduce((acc, c) => {
             acc[c] = { 
                 purpose: '親師座談會', 
-                deadline: formatDate(new Date(Date.now() + 14 * 24 * 60 * 60 * 1000)), // 預設截止日為兩週後
+                deadline: formatDate(new Date(Date.now() + 14 * 24 * 60 * 60 * 1000)),
                 maxPerParent: 999, 
                 duration: 60, 
                 notes: '歡迎家長預約，請準時抵達喔！', 
                 slots: [],
-                boardData: null // 獨立的一份最終排班資料
+                boardData: null 
             };
             return acc;
         }, {});
@@ -170,33 +170,28 @@
 
         // --- 主程式區 ---
         const App = () => {
-            // 全域狀態管理
-            const [role, setRole] = useState(null); // null, 'teacher', 'parent'
+            const [role, setRole] = useState(null);
             const [reservations, setReservations] = useState([]);
             const [classSettings, setClassSettings] = useState(DEFAULT_CLASS_SETTINGS);
             const [currentDate, setCurrentDate] = useState(new Date());
             const [useLocalMode, setUseLocalMode] = useState(false);
             
-            // 老師專區狀態
             const [teacherSelectedClass, setTeacherSelectedClass] = useState(CLASS_OPTIONS[0]);
-            const [teacherActiveTab, setTeacherActiveTab] = useState('settings'); // 'settings' 或 'board'
+            const [teacherActiveTab, setTeacherActiveTab] = useState('settings');
             const [teacherSlotForm, setTeacherSlotForm] = useState({ id: null, date: formatDate(new Date()), startHour: '09', startMin: '00', endHour: '10', endMin: '00' });
             const [isEditingSlot, setIsEditingSlot] = useState(false);
             const [teacherLocalNote, setTeacherLocalNote] = useState('');
             const [teacherLocalPurpose, setTeacherLocalPurpose] = useState('');
             const [isAttendanceOpen, setIsAttendanceOpen] = useState(false);
 
-            // 家長專區狀態
             const [parentForm, setParentForm] = useState({ childName: '', venue: CLASS_OPTIONS[0], date: '', slotId: '' });
             const [isParentLocked, setIsParentLocked] = useState(false);
             const [isSubmitting, setIsSubmitting] = useState(false);
 
-            // 對話框狀態
             const [dialog, setDialog] = useState({ isOpen: false, message: '', type: 'alert', onConfirm: null, expectedPin: '', pinToCopy: '', warning: '' });
             const [pinInput, setPinInput] = useState('');
             const [isCopied, setIsCopied] = useState(false);
 
-            // 同步老師備註與目的欄位
             useEffect(() => {
                 if (teacherSelectedClass === '全部') {
                     setTeacherLocalNote('');
@@ -231,7 +226,6 @@
                 return reservations.filter(r => r.venue === parentForm.venue && (r.childName || r.name || '').trim() === childNameTrimmed).length;
             }, [reservations, parentForm.venue, childNameTrimmed]);
 
-            // 老師專用：浮動登記簿
             const attendanceList = useMemo(() => {
                 if (role !== 'teacher') return [];
                 let res = reservations;
@@ -256,7 +250,6 @@
                 })).sort((a, b) => a.name.localeCompare(b.name));
             }, [reservations, teacherSelectedClass, role]);
 
-            // 計算無效預約 (孤兒預約)
             const orphanedReservations = useMemo(() => {
                 if (role !== 'teacher') return [];
                 return reservations.filter(res => {
@@ -347,7 +340,6 @@
                 }
             };
 
-            // --- 初始載入與 Firebase 連線 ---
             useEffect(() => {
                 try {
                     const savedRes = localStorage.getItem(LOCAL_RES_KEY);
@@ -398,9 +390,6 @@
                 document.body.removeChild(textArea);
             };
 
-            // ==========================================
-            // 老師專屬方法
-            // ==========================================
             const updateClassSetting = (key, value) => {
                 if (teacherSelectedClass === '全部') return;
                 const currentSettings = classSettings[teacherSelectedClass] || DEFAULT_CLASS_SETTINGS[teacherSelectedClass] || {};
@@ -496,7 +485,6 @@
                 window.scrollTo({ top: 0, behavior: 'smooth' });
             };
 
-            // 排班板 (Board) 專用邏輯
             const handleLoadBoardData = () => {
                 if (teacherSelectedClass === '全部') return showAlert("請先選擇單一班級來進行排班喔！");
                 showConfirm("確定要載入最新的家長預約資料到排班板嗎？\n\n(注意：這會覆蓋您目前排班板上的舊進度喔！)", () => {
@@ -766,9 +754,12 @@
                                                 {dailySlots.map((slot, sIdx) => {
                                                     const slotReservations = reservations.filter(r => r.venue === slot.className && r.date === slot.date && r.startTime === slot.startTime);
 
+                                                    // 嚴格比對：只有在目前鎖定的家長姓名一致時，才顯示該名家長的專屬綠色勾選，否則一律隱藏！
                                                     const myRes = slotReservations.find(r => 
-                                                        (viewRole === 'parent' && isParentLocked && (r.childName || r.name || '').trim() === childNameTrimmed && r.venue === parentForm.venue) || 
-                                                        mySavedPins[r.id] === r.pin
+                                                        viewRole === 'parent' && 
+                                                        isParentLocked && 
+                                                        (r.childName || r.name || '').trim() === childNameTrimmed && 
+                                                        r.venue === parentForm.venue
                                                     );
 
                                                     return (
@@ -1084,7 +1075,8 @@
                                         </div>
                                     </div>
 
-                                    <div className="flex gap-4 overflow-x-auto pb-4 pt-2 no-scrollbar items-start">
+                                    {/* 修改為 Flex-wrap 允許自動往下延展 */}
+                                    <div className="flex flex-wrap gap-6 pb-4 pt-2 items-start justify-center md:justify-start">
                                         {(() => {
                                             const cSet = classSettings[teacherSelectedClass] || {};
                                             const bData = cSet.boardData || [];
@@ -1125,7 +1117,7 @@
                                                 slotsForDate.sort((a,b) => a.startTime.localeCompare(b.startTime));
 
                                                 return (
-                                                    <div key={date} className="min-w-[320px] bg-slate-100 p-4 rounded-xl sketchy-border-sm flex flex-col">
+                                                    <div key={date} className="w-full md:w-[320px] lg:w-[340px] flex-none bg-slate-100 p-4 rounded-xl sketchy-border-sm flex flex-col">
                                                         <div className="text-center font-black text-2xl text-slate-800 border-b-2 border-slate-300 pb-2 mb-4">
                                                             📅 {date}
                                                         </div>
