@@ -1147,11 +1147,12 @@
                                                                                         key={card.id}
                                                                                         draggable
                                                                                         onDragStart={e => handleBoardDragStart(e, card.id)}
-                                                                                        className={`p-2 rounded shadow-sm cursor-grab active:cursor-grabbing border relative group ${isBestChoice ? 'bg-yellow-50 border-yellow-400 shadow-md' : 'bg-slate-50 border-slate-200'}`}
+                                                                                        className={`p-2 rounded shadow-sm cursor-grab active:cursor-grabbing relative group ${isBestChoice ? 'border-2 border-yellow-500 shadow-md' : 'border border-slate-300'}`}
+                                                                                        style={{ backgroundColor: card.color || getColorForName(card.childName || card.name) }}
                                                                                     >
                                                                                         <div className="font-bold text-slate-800 text-base pr-6">{card.childName || card.name || '未命名'}</div>
-                                                                                        {isBestChoice && <div className="mt-1 text-[11px] bg-green-600 text-white px-1.5 py-0.5 rounded inline-block font-bold shadow-sm">⭐ 該小孩的最佳選取時段</div>}
-                                                                                        <button onClick={() => handleBoardDeleteRes(card.id)} className="absolute top-1 right-1 text-slate-400 hover:text-red-500 font-bold w-5 h-5 flex items-center justify-center bg-white hover:bg-red-100 rounded-full transition-colors opacity-0 group-hover:opacity-100 border border-slate-200" title="刪除此紀錄">×</button>
+                                                                                        {isBestChoice && <div className="mt-1 text-[10px] bg-yellow-400 text-yellow-900 px-1.5 py-0.5 rounded inline-block font-bold shadow-sm">⭐ 該小孩的最佳選取時段</div>}
+                                                                                        <button onClick={() => handleBoardDeleteRes(card.id)} className="absolute top-1 right-1 text-slate-400 hover:text-red-500 font-bold w-5 h-5 flex items-center justify-center bg-white/70 hover:bg-red-100 rounded-full transition-colors opacity-0 group-hover:opacity-100 border border-slate-200" title="刪除此紀錄">×</button>
                                                                                     </div>
                                                                                 )
                                                                             })}
