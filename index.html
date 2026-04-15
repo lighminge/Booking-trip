@@ -80,24 +80,15 @@
             overflow: hidden;
             background: white;
         }
-        .reservation-note {
-            border: 1px solid rgba(0,0,0,0.2);
-            border-radius: 2px 15px 5px 10px/10px 5px 15px 2px;
-            box-shadow: 2px 2px 3px rgba(0,0,0,0.05);
-            cursor: pointer;
-            transition: transform 0.1s;
-        }
-        .reservation-note:hover {
-            transform: scale(1.02) rotate(-1deg);
-            z-index: 10;
-        }
-        input[type="date"]::-webkit-calendar-picker-indicator,
-        input[type="time"]::-webkit-calendar-picker-indicator {
-            filter: invert(0.5);
-            cursor: pointer;
-        }
         .no-scrollbar::-webkit-scrollbar { display: none; }
         .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        
+        /* 倒數計時動畫 */
+        @keyframes subtle-bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-5px); }
+        }
+        .animate-subtle-bounce { animation: subtle-bounce 2s infinite; }
     </style>
 </head>
 <body class="p-4 md:p-8">
@@ -122,11 +113,13 @@
         
         const auth = firebase.auth();
         const db = firebase.firestore();
-        const dbReservations = db.collection('reservations');
-        const dbSettings = db.collection('settings').doc('global_classes');
+        
+        // V3 架構升級：使用全新的集合名稱，避免與舊資料衝突
+        const dbReservations = db.collection('reservations_v3');
+        const dbSettings = db.collection('settings').doc('global_classes_v3');
 
-        const LOCAL_RES_KEY = 'my_standalone_reservations';
-        const LOCAL_SET_KEY = 'my_standalone_class_settings';
+        const LOCAL_RES_KEY = 'my_standalone_reservations_v3';
+        const LOCAL_SET_KEY = 'my_standalone_class_settings_v3';
 
         // --- 工具函數與常數區 ---
         const CLASS_OPTIONS = ['🐻 小熊班', '🐧 企鵝班', '⭐ 星星班', '☀️ 太陽班', '❄️ 雪花班', '☁️ 白雲班'];
@@ -141,16 +134,19 @@
             return [year, month, day].join('-');
         };
 
+        const DEFAULT_PURPOSE_SETTINGS = {
+            deadline: formatDate(new Date(Date.now() + 14 * 24 * 60 * 60 * 1000)),
+            maxPerParent: 999, 
+            duration: 60, 
+            notes: '歡迎家長預約，請準時抵達喔！', 
+            slots: [],
+            boardData: [],
+            publishedData: [],
+            isPublished: false
+        };
+
         const DEFAULT_CLASS_SETTINGS = CLASS_OPTIONS.reduce((acc, c) => {
-            acc[c] = { 
-                purpose: '親師座談會', 
-                deadline: formatDate(new Date(Date.now() + 14 * 24 * 60 * 60 * 1000)),
-                maxPerParent: 999, 
-                duration: 60, 
-                notes: '歡迎家長預約，請準時抵達喔！', 
-                slots: [],
-                boardData: null 
-            };
+            acc[c] = { purposes: { '親師座談會': { ...DEFAULT_PURPOSE_SETTINGS } } };
             return acc;
         }, {});
 
@@ -170,38 +166,64 @@
 
         // --- 主程式區 ---
         const App = () => {
-            const [role, setRole] = useState(null);
+            // 全域狀態管理
+            const [role, setRole] = useState(null); // null, 'teacher', 'parent'
             const [reservations, setReservations] = useState([]);
             const [classSettings, setClassSettings] = useState(DEFAULT_CLASS_SETTINGS);
             const [currentDate, setCurrentDate] = useState(new Date());
             const [useLocalMode, setUseLocalMode] = useState(false);
             
+            // 老師專區狀態
             const [teacherSelectedClass, setTeacherSelectedClass] = useState(CLASS_OPTIONS[0]);
+            const [teacherSelectedPurpose, setTeacherSelectedPurpose] = useState('親師座談會');
             const [teacherActiveTab, setTeacherActiveTab] = useState('settings');
             const [teacherSlotForm, setTeacherSlotForm] = useState({ id: null, date: formatDate(new Date()), startHour: '09', startMin: '00', endHour: '10', endMin: '00' });
             const [isEditingSlot, setIsEditingSlot] = useState(false);
             const [teacherLocalNote, setTeacherLocalNote] = useState('');
-            const [teacherLocalPurpose, setTeacherLocalPurpose] = useState('');
             const [isAttendanceOpen, setIsAttendanceOpen] = useState(false);
 
-            const [parentForm, setParentForm] = useState({ childName: '', venue: CLASS_OPTIONS[0], date: '', slotId: '' });
+            // 家長專區狀態
+            const [parentForm, setParentForm] = useState({ childName: '', venue: CLASS_OPTIONS[0], purpose: '', date: '', slotId: '' });
             const [isParentLocked, setIsParentLocked] = useState(false);
             const [isSubmitting, setIsSubmitting] = useState(false);
+            const [isReservationSlipOpen, setIsReservationSlipOpen] = useState(false);
+            const [isNotificationOpen, setIsNotificationOpen] = useState(false);
 
-            const [dialog, setDialog] = useState({ isOpen: false, message: '', type: 'alert', onConfirm: null, expectedPin: '', pinToCopy: '', warning: '' });
+            // 對話框狀態
+            const [dialog, setDialog] = useState({ isOpen: false, message: '', type: 'alert', onConfirm: null, expectedPin: '', pinToCopy: '', warning: '', gasCode: '' });
             const [pinInput, setPinInput] = useState('');
+            const [promptInput, setPromptInput] = useState('');
             const [isCopied, setIsCopied] = useState(false);
 
+            // 確保老師選擇的目的正確連動
             useEffect(() => {
-                if (teacherSelectedClass === '全部') {
+                if (teacherSelectedClass !== '全部') {
+                    const purposes = Object.keys((classSettings[teacherSelectedClass] || {}).purposes || {});
+                    if (!purposes.includes(teacherSelectedPurpose)) {
+                        setTeacherSelectedPurpose(purposes.length > 0 ? purposes[0] : '');
+                    }
+                } else {
+                    setTeacherSelectedPurpose('全部');
+                }
+            }, [teacherSelectedClass, classSettings]);
+
+            // 確保家長選擇的目的正確連動
+            useEffect(() => {
+                const purposes = Object.keys((classSettings[parentForm.venue] || {}).purposes || {});
+                if (!purposes.includes(parentForm.purpose)) {
+                    setParentForm(prev => ({ ...prev, purpose: purposes.length > 0 ? purposes[0] : '', slotId: '', date: '' }));
+                }
+            }, [parentForm.venue, classSettings]);
+
+            // 同步老師備註欄位
+            useEffect(() => {
+                if (teacherSelectedClass === '全部' || teacherSelectedPurpose === '全部') {
                     setTeacherLocalNote('');
-                    setTeacherLocalPurpose('');
                     return;
                 }
-                const currentSets = classSettings[teacherSelectedClass] || DEFAULT_CLASS_SETTINGS[teacherSelectedClass] || {};
+                const currentSets = ((classSettings[teacherSelectedClass] || {}).purposes || {})[teacherSelectedPurpose] || {};
                 setTeacherLocalNote(currentSets.notes || '');
-                setTeacherLocalPurpose(currentSets.purpose || '親師座談會');
-            }, [classSettings, teacherSelectedClass]);
+            }, [classSettings, teacherSelectedClass, teacherSelectedPurpose]);
 
             const calendarDays = useMemo(() => {
                 const year = currentDate.getFullYear();
@@ -217,59 +239,108 @@
             }, [currentDate]);
 
             const mySavedPins = useMemo(() => {
-                try { return JSON.parse(localStorage.getItem('my_reservation_pins') || '{}'); } catch(e) { return {}; }
+                try { return JSON.parse(localStorage.getItem('my_reservation_pins_v3') || '{}'); } catch(e) { return {}; }
             }, [reservations]);
 
             const childNameTrimmed = (parentForm.childName || '').trim();
             const parentBookingsCount = useMemo(() => {
-                if (!childNameTrimmed) return 0;
-                return reservations.filter(r => r.venue === parentForm.venue && (r.childName || r.name || '').trim() === childNameTrimmed).length;
-            }, [reservations, parentForm.venue, childNameTrimmed]);
+                if (!childNameTrimmed || !parentForm.purpose) return 0;
+                return reservations.filter(r => r.venue === parentForm.venue && r.purpose === parentForm.purpose && (r.childName || r.name || '').trim() === childNameTrimmed).length;
+            }, [reservations, parentForm.venue, parentForm.purpose, childNameTrimmed]);
 
+            // 老師登記簿
             const attendanceList = useMemo(() => {
                 if (role !== 'teacher') return [];
                 let res = reservations;
-                if (teacherSelectedClass !== '全部') {
-                    res = res.filter(r => r.venue === teacherSelectedClass);
-                }
+                if (teacherSelectedClass !== '全部') res = res.filter(r => r.venue === teacherSelectedClass);
+                if (teacherSelectedPurpose !== '全部') res = res.filter(r => r.purpose === teacherSelectedPurpose);
                 
                 const grouped = {};
                 res.forEach(r => {
                     const name = (r.childName || r.name || '未命名').trim();
-                    if (!grouped[name]) {
-                        grouped[name] = { name: name, slots: [], venues: new Set() };
-                    }
+                    if (!grouped[name]) grouped[name] = { name: name, slots: [], venues: new Set(), purposes: new Set() };
                     grouped[name].slots.push(r);
                     grouped[name].venues.add(r.venue);
+                    grouped[name].purposes.add(r.purpose);
                 });
                 
                 return Object.values(grouped).map(g => ({
                     ...g,
                     venues: Array.from(g.venues),
+                    purposes: Array.from(g.purposes),
                     slots: g.slots.sort((a, b) => (a.date + a.startTime).localeCompare(b.date + b.startTime))
                 })).sort((a, b) => a.name.localeCompare(b.name));
-            }, [reservations, teacherSelectedClass, role]);
+            }, [reservations, teacherSelectedClass, teacherSelectedPurpose, role]);
+
+            // 家長預約單 (包含剩餘數量與取消用PIN)
+            const parentSlipData = useMemo(() => {
+                if (role !== 'parent') return [];
+                
+                const myRes = reservations.filter(r => {
+                    const byPin = mySavedPins[r.id] === r.pin;
+                    const byName = isParentLocked && (r.childName || r.name || '').trim() === childNameTrimmed;
+                    return byPin || byName;
+                });
+                
+                const grouped = {};
+                myRes.forEach(r => {
+                    const name = (r.childName || r.name || '未命名').trim();
+                    if (!grouped[name]) grouped[name] = { name: name, slots: [] };
+                    grouped[name].slots.push(r);
+                });
+                
+                return Object.values(grouped).map(g => ({
+                    ...g,
+                    slots: g.slots.sort((a, b) => (a.date + a.startTime).localeCompare(b.date + b.startTime))
+                })).sort((a, b) => a.name.localeCompare(b.name));
+            }, [reservations, mySavedPins, role, isParentLocked, childNameTrimmed]);
+
+            // 家長結果通知單 (只抓取已發布的資料)
+            const parentNotificationData = useMemo(() => {
+                if (role !== 'parent') return [];
+                const results = [];
+                const targetName = childNameTrimmed || '';
+                
+                Object.keys(classSettings).forEach(venue => {
+                    const purposes = classSettings[venue]?.purposes || {};
+                    Object.keys(purposes).forEach(purpose => {
+                        const pData = purposes[purpose];
+                        if (pData.isPublished && pData.publishedData) {
+                            pData.publishedData.forEach(r => {
+                                const rName = (r.childName || r.name || '').trim();
+                                if ((targetName && rName === targetName) || mySavedPins[r.id] === r.pin) {
+                                    if (!results.some(existing => existing.id === r.id)) {
+                                        results.push({ ...r, venue, purpose });
+                                    }
+                                }
+                            });
+                        }
+                    });
+                });
+                return results.sort((a, b) => (a.date + a.startTime).localeCompare(b.date + b.startTime));
+            }, [classSettings, childNameTrimmed, mySavedPins, role]);
 
             const orphanedReservations = useMemo(() => {
                 if (role !== 'teacher') return [];
                 return reservations.filter(res => {
                     if (teacherSelectedClass !== '全部' && res.venue !== teacherSelectedClass) return false;
+                    if (teacherSelectedPurpose !== '全部' && res.purpose !== teacherSelectedPurpose) return false;
                     
-                    const cSettings = classSettings[res.venue] || DEFAULT_CLASS_SETTINGS[res.venue] || { slots: [] };
+                    const cSettings = ((classSettings[res.venue] || {}).purposes || {})[res.purpose] || { slots: [] };
                     const slotExists = (cSettings.slots || []).some(s => s.date === res.date && s.startTime === res.startTime);
                     
                     return !slotExists;
                 }).sort((a, b) => (a.date + a.startTime).localeCompare(b.date + b.startTime));
-            }, [reservations, classSettings, teacherSelectedClass, role]);
+            }, [reservations, classSettings, teacherSelectedClass, teacherSelectedPurpose, role]);
 
-            const currentParentSettings = classSettings[parentForm.venue] || DEFAULT_CLASS_SETTINGS[parentForm.venue] || { slots: [], maxPerParent: 999, duration: 60 };
+            const currentParentSettings = ((classSettings[parentForm.venue] || {}).purposes || {})[parentForm.purpose] || { slots: [], maxPerParent: 999, duration: 60 };
             
             const availableDates = useMemo(() => {
                 const slots = currentParentSettings.slots || [];
                 return [...new Set(slots.map(s => s.date))].sort();
             }, [currentParentSettings.slots]);
 
-            useEffect(() => { setParentForm(prev => ({ ...prev, slotId: '' })); }, [parentForm.date, parentForm.venue]);
+            useEffect(() => { setParentForm(prev => ({ ...prev, slotId: '' })); }, [parentForm.date, parentForm.venue, parentForm.purpose]);
             
             useEffect(() => {
                 if (availableDates.length > 0) {
@@ -300,7 +371,7 @@
             const showPinPrompt = (message, expectedPin, onConfirm, resId) => {
                 let autoPin = '';
                 try {
-                    const savedPins = JSON.parse(localStorage.getItem('my_reservation_pins') || '{}');
+                    const savedPins = JSON.parse(localStorage.getItem('my_reservation_pins_v3') || '{}');
                     if (savedPins[resId]) autoPin = savedPins[resId];
                 } catch (e) {}
                 setPinInput(autoPin);
@@ -325,12 +396,7 @@
                     const savedRes = localStorage.getItem(LOCAL_RES_KEY);
                     const savedSet = localStorage.getItem(LOCAL_SET_KEY);
                     if (savedRes) setReservations(JSON.parse(savedRes));
-                    if (savedSet) {
-                        const parsedSet = JSON.parse(savedSet);
-                        const merged = {};
-                        for(let c of CLASS_OPTIONS) merged[c] = { ...DEFAULT_CLASS_SETTINGS[c], ...parsedSet[c] };
-                        setClassSettings(merged);
-                    }
+                    if (savedSet) setClassSettings(JSON.parse(savedSet));
                 } catch (e) {}
 
                 if (error.code === 'permission-denied') {
@@ -345,12 +411,7 @@
                     const savedRes = localStorage.getItem(LOCAL_RES_KEY);
                     const savedSet = localStorage.getItem(LOCAL_SET_KEY);
                     if (savedRes) setReservations(JSON.parse(savedRes));
-                    if (savedSet) {
-                        const parsedSet = JSON.parse(savedSet);
-                        const merged = {};
-                        for(let c of CLASS_OPTIONS) merged[c] = { ...DEFAULT_CLASS_SETTINGS[c], ...parsedSet[c] };
-                        setClassSettings(merged);
-                    }
+                    if (savedSet) setClassSettings(JSON.parse(savedSet));
                 } catch (e) {}
 
                 const authenticate = async () => {
@@ -369,10 +430,7 @@
 
                 const unsubSet = dbSettings.onSnapshot((doc) => {
                     if (doc.exists) {
-                        const dbClasses = doc.data().classes;
-                        const merged = {};
-                        for(let c of CLASS_OPTIONS) merged[c] = { ...DEFAULT_CLASS_SETTINGS[c], ...dbClasses[c] };
-                        setClassSettings(merged);
+                        setClassSettings({ ...DEFAULT_CLASS_SETTINGS, ...doc.data().classes });
                     } else {
                         dbSettings.set({ classes: DEFAULT_CLASS_SETTINGS }).catch(e => console.warn(e));
                     }
@@ -390,41 +448,90 @@
                 document.body.removeChild(textArea);
             };
 
-            const updateClassSetting = (key, value) => {
-                if (teacherSelectedClass === '全部') return;
-                const currentSettings = classSettings[teacherSelectedClass] || DEFAULT_CLASS_SETTINGS[teacherSelectedClass] || {};
-                const newSettings = { ...classSettings, [teacherSelectedClass]: { ...currentSettings, [key]: value } };
+            // ==========================================
+            // 老師專屬方法
+            // ==========================================
+            const handleTeacherPurposeChange = (e) => {
+                const val = e.target.value;
+                if (val === '__ADD_NEW__') {
+                    setPromptInput('');
+                    setDialog({
+                        isOpen: true,
+                        type: 'prompt',
+                        message: '請輸入新的預約目的名稱 (例如: 萬聖節闖關)：',
+                        onConfirm: (newPurpose) => {
+                            setClassSettings(prevSettings => {
+                                const classSets = prevSettings[teacherSelectedClass] || { purposes: {} };
+                                if (!classSets.purposes[newPurpose]) {
+                                    const newSettings = {
+                                        ...prevSettings,
+                                        [teacherSelectedClass]: {
+                                            ...classSets,
+                                            purposes: {
+                                                ...classSets.purposes,
+                                                [newPurpose]: { ...DEFAULT_PURPOSE_SETTINGS }
+                                            }
+                                        }
+                                    };
+                                    if (useLocalMode) saveLocal(null, newSettings);
+                                    else dbSettings.set({ classes: newSettings }, { merge: true }).catch(err => console.warn(err));
+                                    return newSettings;
+                                }
+                                return prevSettings;
+                            });
+                            setTeacherSelectedPurpose(newPurpose);
+                        }
+                    });
+                } else {
+                    setTeacherSelectedPurpose(val);
+                }
+            };
+
+            const updatePurposeSetting = (key, value) => {
+                if (teacherSelectedClass === '全部' || teacherSelectedPurpose === '全部' || !teacherSelectedPurpose) return;
+                const classSets = classSettings[teacherSelectedClass] || { purposes: {} };
+                const purposeSets = classSets.purposes[teacherSelectedPurpose] || { ...DEFAULT_PURPOSE_SETTINGS };
+                const newSettings = {
+                    ...classSettings,
+                    [teacherSelectedClass]: {
+                        ...classSets,
+                        purposes: {
+                            ...classSets.purposes,
+                            [teacherSelectedPurpose]: { ...purposeSets, [key]: value }
+                        }
+                    }
+                };
                 setClassSettings(newSettings);
                 if (useLocalMode) saveLocal(null, newSettings);
                 else dbSettings.set({ classes: newSettings }, { merge: true }).catch(e => handleFirebaseError(e, "儲存設定"));
             };
 
             const handleTeacherStartChange = (e) => {
-                if (teacherSelectedClass === '全部') return;
+                if (teacherSelectedClass === '全部' || teacherSelectedPurpose === '全部') return;
                 const { name, value } = e.target;
                 const newForm = { ...teacherSlotForm, [name]: value };
                 const startStr = `${newForm.startHour}:${newForm.startMin}`;
-                const currentSettings = classSettings[teacherSelectedClass] || DEFAULT_CLASS_SETTINGS[teacherSelectedClass] || {};
-                const endStr = addMinutes(startStr, currentSettings.duration || 60);
+                const currentSets = ((classSettings[teacherSelectedClass] || {}).purposes || {})[teacherSelectedPurpose] || {};
+                const endStr = addMinutes(startStr, currentSets.duration || 60);
                 const [endH, endM] = endStr.split(':');
                 setTeacherSlotForm({ ...newForm, endHour: endH, endMin: endM });
             };
 
             const handleAddSlots = () => {
-                if (teacherSelectedClass === '全部') return showAlert("請先選擇特定的班級喔！");
+                if (teacherSelectedClass === '全部' || teacherSelectedPurpose === '全部') return showAlert("請先選擇特定的班級與目的喔！");
                 
                 const startStr = `${teacherSlotForm.startHour}:${teacherSlotForm.startMin}`;
                 const endStr = `${teacherSlotForm.endHour}:${teacherSlotForm.endMin}`;
                 
                 if (startStr >= endStr) return showAlert("結束時間必須晚於開始時間喔！");
                 
-                const currentSettings = classSettings[teacherSelectedClass] || DEFAULT_CLASS_SETTINGS[teacherSelectedClass] || {};
+                const currentSettings = ((classSettings[teacherSelectedClass] || {}).purposes || {})[teacherSelectedPurpose] || {};
                 
                 if (isEditingSlot) {
                     const newSlots = (currentSettings.slots || []).map(s => 
                         s.id === teacherSlotForm.id ? { ...s, date: teacherSlotForm.date, startTime: startStr, endTime: endStr } : s
                     );
-                    updateClassSetting('slots', newSlots);
+                    updatePurposeSetting('slots', newSlots);
                     setIsEditingSlot(false);
                     setTeacherSlotForm(prev => ({...prev, id: null}));
                     showAlert(`✅ 時段已成功更新！`);
@@ -453,7 +560,7 @@
                         return acc;
                     }, []);
 
-                    updateClassSetting('slots', combinedSlots);
+                    updatePurposeSetting('slots', combinedSlots);
 
                     const nextStartStr = `${teacherSlotForm.endHour}:${teacherSlotForm.endMin}`;
                     const nextEndStr = addMinutes(nextStartStr, duration);
@@ -471,8 +578,9 @@
                 }
             };
 
-            const handleEditSlot = (cName, slot) => {
+            const handleEditSlot = (cName, pName, slot) => {
                 setTeacherSelectedClass(cName);
+                setTeacherSelectedPurpose(pName);
                 setTeacherSlotForm({
                     id: slot.id,
                     date: slot.date,
@@ -486,10 +594,10 @@
             };
 
             const handleLoadBoardData = () => {
-                if (teacherSelectedClass === '全部') return showAlert("請先選擇單一班級來進行排班喔！");
+                if (teacherSelectedClass === '全部' || teacherSelectedPurpose === '全部') return showAlert("請先選擇單一班級與目的來進行排班喔！");
                 showConfirm("確定要載入最新的家長預約資料到排班板嗎？\n\n(注意：這會覆蓋您目前排班板上的舊進度喔！)", () => {
-                    const currentRes = reservations.filter(r => r.venue === teacherSelectedClass);
-                    updateClassSetting('boardData', currentRes);
+                    const currentRes = reservations.filter(r => r.venue === teacherSelectedClass && r.purpose === teacherSelectedPurpose);
+                    updatePurposeSetting('boardData', currentRes);
                     showAlert("✅ 已成功載入最新預約資料至排班板！");
                 });
             };
@@ -503,41 +611,145 @@
                 const resId = e.dataTransfer.getData('resId');
                 if (!resId) return;
 
-                const currentSettings = classSettings[teacherSelectedClass] || {};
+                const currentSettings = ((classSettings[teacherSelectedClass] || {}).purposes || {})[teacherSelectedPurpose] || {};
                 const newBoardData = (currentSettings.boardData || []).map(r => {
                     if (r.id === resId) {
                         return { ...r, date: targetSlot.date, startTime: targetSlot.startTime, endTime: targetSlot.endTime };
                     }
                     return r;
                 });
-                updateClassSetting('boardData', newBoardData);
+                updatePurposeSetting('boardData', newBoardData);
             };
 
             const handleBoardDeleteRes = (resId) => {
-                const currentSettings = classSettings[teacherSelectedClass] || {};
+                const currentSettings = ((classSettings[teacherSelectedClass] || {}).purposes || {})[teacherSelectedPurpose] || {};
                 const newBoardData = (currentSettings.boardData || []).filter(r => r.id !== resId);
-                updateClassSetting('boardData', newBoardData);
+                updatePurposeSetting('boardData', newBoardData);
+            };
+
+            const handleAutoResolveBoard = () => {
+                if (teacherSelectedClass === '全部' || teacherSelectedPurpose === '全部') return showAlert("請先選擇單一班級與目的來進行自動排班喔！");
+                const currentSettings = ((classSettings[teacherSelectedClass] || {}).purposes || {})[teacherSelectedPurpose] || {};
+                const bData = currentSettings.boardData || [];
+                if (bData.length === 0) return showAlert('目前排班板上沒有資料，請先載入預約喔！');
+
+                const childrenMap = {};
+                bData.forEach(r => {
+                    const name = (r.childName || r.name || '未命名').trim();
+                    if (!childrenMap[name]) childrenMap[name] = [];
+                    childrenMap[name].push(r);
+                });
+
+                const sortedChildren = Object.keys(childrenMap).sort((a, b) => childrenMap[a].length - childrenMap[b].length);
+                const finalBoardData = [];
+                const occupiedSlots = new Set();
+
+                sortedChildren.forEach(childName => {
+                    const requests = childrenMap[childName];
+                    let assigned = false;
+
+                    for (let req of requests) {
+                        const slotKey = req.date + '_' + req.startTime;
+                        if (!occupiedSlots.has(slotKey)) {
+                            occupiedSlots.add(slotKey);
+                            finalBoardData.push(req);
+                            assigned = true;
+                            break;
+                        }
+                    }
+                    if (!assigned) finalBoardData.push(requests[0]);
+                });
+
+                updatePurposeSetting('boardData', finalBoardData);
+                showAlert('✨ 自動排班完成！\n\n系統已優先為「選擇較少」的小孩保留時段，並盡可能將大家錯開。\n(若仍有紅框衝突，請老師直接拖曳卡片進行微調唷！)');
+            };
+
+            const handlePublishBoard = () => {
+                if (teacherSelectedClass === '全部' || teacherSelectedPurpose === '全部') return showAlert("請先選擇單一班級與目的！");
+                showConfirm("確定要把目前的排班結果發布給家長嗎？\n發布後，家長將可以在「預約結果通知」中看到這些安排！", () => {
+                    const currentSettings = ((classSettings[teacherSelectedClass] || {}).purposes || {})[teacherSelectedPurpose] || {};
+                    updatePurposeSetting('publishedData', currentSettings.boardData || []);
+                    updatePurposeSetting('isPublished', true);
+                    showAlert("📢 成功！最終排班結果已經發送給家長囉！");
+                });
             };
 
             const exportBoardToExcel = () => {
-                const currentSettings = classSettings[teacherSelectedClass] || {};
+                if (teacherSelectedClass === '全部' || teacherSelectedPurpose === '全部') return showAlert("請先選擇單一班級與目的！");
+                const currentSettings = ((classSettings[teacherSelectedClass] || {}).purposes || {})[teacherSelectedPurpose] || {};
                 const bData = currentSettings.boardData || [];
                 if (bData.length === 0) return showAlert('目前排班板上沒有資料可以匯出喔！');
                 
                 const sorted = [...bData].sort((a, b) => (a.date + a.startTime).localeCompare(b.date + b.startTime));
-                let csvContent = '\uFEFF排班日期,時段,班級,小孩姓名\n';
+                let csvContent = '\uFEFF排班日期,時段,班級,預約目的,小孩姓名\n';
                 sorted.forEach(res => {
                     const rName = res.childName || res.name || '未命名';
                     const safeName = `"${rName.replace(/"/g, '""')}"`;
                     const safeVenue = `"${res.venue.replace(/"/g, '""')}"`;
-                    csvContent += `${res.date},${res.startTime}~${res.endTime},${safeVenue},${safeName}\n`;
+                    const safePurpose = `"${res.purpose.replace(/"/g, '""')}"`;
+                    csvContent += `${res.date},${res.startTime}~${res.endTime},${safeVenue},${safePurpose},${safeName}\n`;
                 });
                 const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
                 const link = document.createElement('a');
                 link.href = window.URL.createObjectURL(blob);
-                link.download = `最終排班表_${teacherSelectedClass}.csv`;
+                link.download = `最終排班表_${teacherSelectedClass}_${teacherSelectedPurpose}.csv`;
                 document.body.appendChild(link); link.click(); document.body.removeChild(link);
                 showAlert('📊 匯出成功！\n已下載最終排班表 Excel 檔案。');
+            };
+
+            const exportGAS = () => {
+                if (teacherSelectedClass === '全部' || teacherSelectedPurpose === '全部') return showAlert("請先選擇單一班級與目的來產生表單腳本喔！");
+                const currentSettings = ((classSettings[teacherSelectedClass] || {}).purposes || {})[teacherSelectedPurpose] || {};
+                const slots = currentSettings.slots || [];
+                if (slots.length === 0) return showAlert("目前沒有設定任何時段，無法產生腳本喔！");
+
+                const slotStrings = slots.sort((a, b) => (a.date + a.startTime).localeCompare(b.date + b.startTime))
+                                         .map(s => `'${s.date} ${s.startTime}~${s.endTime}'`)
+                                         .join(',\n    ');
+                const maxPer = currentSettings.maxPerParent || 999;
+                
+                const formTitle = `【${teacherSelectedClass}】 - ${teacherSelectedPurpose}`;
+                const formDesc = `預約截止日期：${currentSettings.deadline || '無'}\n\n${currentSettings.notes || ''}`;
+
+                // 修復 GAS 腳本，避免因為換行符號報錯
+                let gasCode = `function createReservationForm() {
+  var form = FormApp.create(${JSON.stringify(formTitle)});
+  form.setDescription(${JSON.stringify(formDesc)});
+
+  form.addTextItem().setTitle('小孩姓名').setRequired(true);
+
+  `;
+                
+                if (maxPer === 1) {
+                    gasCode += `var slotItem = form.addMultipleChoiceItem();
+  slotItem.setTitle('選擇預約時段').setRequired(true);
+  slotItem.setChoiceValues([
+    ${slotStrings}
+  ]);`;
+                } else {
+                    gasCode += `var slotItem = form.addCheckboxItem();
+  slotItem.setTitle('選擇預約時段').setRequired(true);
+  slotItem.setChoiceValues([
+    ${slotStrings}
+  ]);`;
+                    if (maxPer !== 999) {
+                        gasCode += `
+  var itemValidation = FormApp.createCheckboxValidation()
+    .setHelpText('最多只能選擇 ${maxPer} 個時段')
+    .requireSelectAtMost(${maxPer})
+    .build();
+  slotItem.setValidation(itemValidation);`;
+                    }
+                }
+
+                gasCode += `\n\n  Logger.log('表單建立完成！網址：' + form.getEditUrl());\n}`;
+
+                setDialog({
+                    isOpen: true,
+                    type: 'gas',
+                    message: '請將以下代碼貼上至 Google Apps Script (https://script.google.com/) 執行：',
+                    gasCode: gasCode
+                });
             };
 
             // ==========================================
@@ -558,6 +770,7 @@
 
                 const alreadyBooked = reservations.some(r => 
                     r.venue === parentForm.venue && 
+                    r.purpose === parentForm.purpose &&
                     (r.childName || r.name || '').trim() === childNameTrimmed && 
                     r.date === selectedSlot.date && 
                     r.startTime === selectedSlot.startTime
@@ -570,7 +783,7 @@
 
                 if (currentParentSettings.maxPerParent && currentParentSettings.maxPerParent !== 999 && parentBookingsCount >= currentParentSettings.maxPerParent) {
                     setParentForm(prev => ({ ...prev, slotId: '' }));
-                    return showAlert(`⚠️ 預約失敗！\n\n【${childNameTrimmed}】在該班級已達到最高預約上限（共 ${currentParentSettings.maxPerParent} 個時段）。`);
+                    return showAlert(`⚠️ 預約失敗！\n\n【${childNameTrimmed}】在此活動已達到最高預約上限（共 ${currentParentSettings.maxPerParent} 個時段）。`);
                 }
 
                 setIsSubmitting(true);
@@ -579,6 +792,7 @@
                     id: Date.now().toString(),
                     childName: childNameTrimmed,
                     venue: parentForm.venue,
+                    purpose: parentForm.purpose,
                     date: selectedSlot.date,
                     startTime: selectedSlot.startTime,
                     endTime: selectedSlot.endTime,
@@ -588,24 +802,24 @@
 
                 const handleSuccess = () => {
                     setIsSubmitting(false);
-                    setDialog({ isOpen: true, type: 'show-pin', message: '🎉 預約成功！您的專屬確認碼為：', pinToCopy: currentPin, warning: '請務必記下確認碼，若需取消請點擊月曆上您的預約。', onConfirm: null });
+                    setDialog({ isOpen: true, type: 'show-pin', message: '🎉 預約成功！您的專屬確認碼為：', pinToCopy: currentPin, warning: '請務必記下確認碼，若需取消請點擊左側「預約單」或月曆上您的預約。', onConfirm: null });
                     setParentForm(prev => ({ ...prev, slotId: '' })); 
                 };
 
                 if (useLocalMode) {
                     saveLocal([...reservations, newReservationData], null);
                     try {
-                        const savedPins = JSON.parse(localStorage.getItem('my_reservation_pins') || '{}');
+                        const savedPins = JSON.parse(localStorage.getItem('my_reservation_pins_v3') || '{}');
                         savedPins[newReservationData.id] = currentPin;
-                        localStorage.setItem('my_reservation_pins', JSON.stringify(savedPins));
+                        localStorage.setItem('my_reservation_pins_v3', JSON.stringify(savedPins));
                     } catch(e) {}
                     handleSuccess();
                 } else {
                     dbReservations.doc(newReservationData.id).set(newReservationData).then(() => {
                         try {
-                            const savedPins = JSON.parse(localStorage.getItem('my_reservation_pins') || '{}');
+                            const savedPins = JSON.parse(localStorage.getItem('my_reservation_pins_v3') || '{}');
                             savedPins[newReservationData.id] = currentPin;
-                            localStorage.setItem('my_reservation_pins', JSON.stringify(savedPins));
+                            localStorage.setItem('my_reservation_pins_v3', JSON.stringify(savedPins));
                         } catch(e) {}
                         handleSuccess();
                     }).catch(err => {
@@ -618,7 +832,7 @@
             // ==========================================
             // 共用月曆模組
             // ==========================================
-            const renderCalendarView = (viewRole, viewClass) => {
+            const renderCalendarView = (viewRole, viewClass, viewPurpose) => {
                 const nextMonth = () => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1));
                 const prevMonth = () => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1));
 
@@ -650,48 +864,35 @@
                     }, resId);
                 };
 
-                const handleTeacherDeleteSlot = (cName, slotId) => {
+                const handleTeacherDeleteSlot = (cName, pName, slotId) => {
                     showConfirm(`確定要刪除這個開放時段嗎？\n(注意：如果有家長已預約，預約紀錄仍會保留在資料庫中，但月曆上將不會再顯示此時段。)` , () => {
-                        const cSettings = classSettings[cName] || DEFAULT_CLASS_SETTINGS[cName] || { slots: [] };
-                        const newSlots = (cSettings.slots || []).filter(s => s.id !== slotId);
-                        const newSettings = { ...classSettings, [cName]: { ...cSettings, slots: newSlots } };
+                        const classSets = classSettings[cName] || { purposes: {} };
+                        const pSettings = classSets.purposes[pName] || { slots: [] };
+                        const newSlots = (pSettings.slots || []).filter(s => s.id !== slotId);
+                        
+                        const newSettings = { 
+                            ...classSettings, 
+                            [cName]: { 
+                                ...classSets, 
+                                purposes: { ...classSets.purposes, [pName]: { ...pSettings, slots: newSlots } }
+                            } 
+                        };
                         setClassSettings(newSettings);
                         if (useLocalMode) saveLocal(null, newSettings);
                         else dbSettings.set({ classes: newSettings }, { merge: true });
                     });
                 };
 
-                const exportToICS = () => {
-                    if (reservations.length === 0) return showAlert('目前還沒有任何預約資料可以匯出喔！');
-                    let icsContent = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Handdrawn Calendar//TW\r\nCALSCALE:GREGORIAN\r\n";
-                    reservations.forEach(res => {
-                        const rName = res.childName || res.name || '未命名';
-                        const startDt = res.date.replace(/-/g, '') + 'T' + res.startTime.replace(/:/g, '') + '00';
-                        const endDt = res.date.replace(/-/g, '') + 'T' + res.endTime.replace(/:/g, '') + '00';
-                        icsContent += "BEGIN:VEVENT\r\n";
-                        icsContent += `SUMMARY:【${res.venue}】${rName}\r\n`;
-                        icsContent += `DTSTART:${startDt}\r\nDTEND:${endDt}\r\n`;
-                        icsContent += `DESCRIPTION:預約人：${rName}\\n班級：${res.venue}\r\n`;
-                        icsContent += "END:VEVENT\r\n";
-                    });
-                    icsContent += "END:VCALENDAR";
-                    const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
-                    const link = document.createElement('a');
-                    link.href = window.URL.createObjectURL(blob);
-                    link.download = 'reservations.ics';
-                    document.body.appendChild(link); link.click(); document.body.removeChild(link);
-                    showAlert('📅 匯出成功！\n已下載「reservations.ics」檔案。');
-                };
-
                 const exportToExcel = () => {
                     if (reservations.length === 0) return showAlert('目前還沒有任何預約資料可以匯出喔！');
                     const sortedReservations = [...reservations].sort((a, b) => (a.date + a.startTime).localeCompare(b.date + b.startTime));
-                    let csvContent = '\uFEFF預約日期,時段,班級,小孩姓名\n';
+                    let csvContent = '\uFEFF預約日期,時段,班級,預約目的,小孩姓名\n';
                     sortedReservations.forEach(res => {
                         const rName = res.childName || res.name || '未命名';
                         const safeName = `"${rName.replace(/"/g, '""')}"`;
                         const safeVenue = `"${res.venue.replace(/"/g, '""')}"`;
-                        csvContent += `${res.date},${res.startTime}~${res.endTime},${safeVenue},${safeName}\n`;
+                        const safePurpose = `"${res.purpose.replace(/"/g, '""')}"`;
+                        csvContent += `${res.date},${res.startTime}~${res.endTime},${safeVenue},${safePurpose},${safeName}\n`;
                     });
                     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
                     const link = document.createElement('a');
@@ -709,16 +910,28 @@
                                     <span>📊</span> 匯出所有預約資料 (Excel)
                                 </button>
                             )}
-                            <div className="flex items-center justify-between w-full md:w-auto gap-4 ml-auto">
-                                <button onClick={prevMonth} className="sketchy-btn sketchy-border-sm px-4 py-1 text-xl font-bold bg-white">&lt; 上個月</button>
-                                <h2 className="text-2xl md:text-3xl font-bold text-slate-800 whitespace-nowrap">{currentDate.getFullYear()} 年 {currentDate.getMonth() + 1} 月</h2>
-                                <button onClick={nextMonth} className="sketchy-btn sketchy-border-sm px-4 py-1 text-xl font-bold bg-white">下個月 &gt;</button>
+                            
+                            {/* 年月選擇器 */}
+                            <div className="flex items-center justify-between w-full md:w-auto gap-2 ml-auto">
+                                <button onClick={prevMonth} className="sketchy-btn sketchy-border-sm px-3 py-1 text-xl font-bold bg-white">&lt;</button>
+                                <div className="flex gap-1 text-xl md:text-2xl font-bold text-slate-800">
+                                    <select value={currentDate.getFullYear()} onChange={e => setCurrentDate(new Date(Number(e.target.value), currentDate.getMonth(), 1))} className="sketchy-border-sm px-2 py-1 bg-white outline-none">
+                                        {[...Array(10)].map((_, i) => {
+                                            const y = new Date().getFullYear() - 2 + i;
+                                            return <option key={y} value={y}>{y} 年</option>
+                                        })}
+                                    </select>
+                                    <select value={currentDate.getMonth()} onChange={e => setCurrentDate(new Date(currentDate.getFullYear(), Number(e.target.value), 1))} className="sketchy-border-sm px-2 py-1 bg-white outline-none">
+                                        {[...Array(12)].map((_, i) => <option key={i} value={i}>{i + 1} 月</option>)}
+                                    </select>
+                                </div>
+                                <button onClick={nextMonth} className="sketchy-btn sketchy-border-sm px-3 py-1 text-xl font-bold bg-white">&gt;</button>
                             </div>
                         </div>
                         
                         <div className="text-center mb-4">
                             <span className="bg-slate-800 text-white px-4 py-1 sketchy-border-sm text-lg font-bold shadow-sm">
-                                📍 目前顯示：{viewClass === '全部' ? '🌈 所有班級的預約時段' : `【${viewClass}】的預約時段`}
+                                📍 顯示條件：{viewClass === '全部' ? '🌈 全部班級' : `【${viewClass}】`} - {viewPurpose === '全部' ? '所有預約目的' : viewPurpose}
                             </span>
                         </div>
 
@@ -732,14 +945,25 @@
                                     const isToday = dateStr === formatDate(new Date());
                                     
                                     let dailySlots = [];
+                                    
+                                    const collectSlots = (cName, pName) => {
+                                        const pSettings = ((classSettings[cName] || {}).purposes || {})[pName] || {};
+                                        const cSlots = (pSettings.slots || []).filter(s => s.date === dateStr);
+                                        cSlots.forEach(s => dailySlots.push({...s, className: cName, purposeName: pName, maxCap: pSettings.maxCapacity || 3}));
+                                    };
+
                                     if (viewClass === '全部') {
                                         CLASS_OPTIONS.forEach(cName => {
-                                            const cSlots = (classSettings[cName]?.slots || []).filter(s => s.date === dateStr);
-                                            cSlots.forEach(s => dailySlots.push({...s, className: cName}));
+                                            const pKeys = Object.keys((classSettings[cName] || {}).purposes || {});
+                                            pKeys.forEach(pName => collectSlots(cName, pName));
                                         });
                                     } else {
-                                        const cSlots = (classSettings[viewClass]?.slots || []).filter(s => s.date === dateStr);
-                                        cSlots.forEach(s => dailySlots.push({...s, className: viewClass}));
+                                        if (viewPurpose === '全部') {
+                                            const pKeys = Object.keys((classSettings[viewClass] || {}).purposes || {});
+                                            pKeys.forEach(pName => collectSlots(viewClass, pName));
+                                        } else {
+                                            collectSlots(viewClass, viewPurpose);
+                                        }
                                     }
                                     
                                     dailySlots.sort((a,b) => a.startTime.localeCompare(b.startTime));
@@ -752,14 +976,14 @@
                                             
                                             <div className="space-y-2 mt-1 h-24 overflow-y-auto no-scrollbar">
                                                 {dailySlots.map((slot, sIdx) => {
-                                                    const slotReservations = reservations.filter(r => r.venue === slot.className && r.date === slot.date && r.startTime === slot.startTime);
-
-                                                    // 嚴格比對：只有在目前鎖定的家長姓名一致時，才顯示該名家長的專屬綠色勾選，否則一律隱藏！
+                                                    const slotReservations = reservations.filter(r => r.venue === slot.className && r.purpose === slot.purposeName && r.date === slot.date && r.startTime === slot.startTime);
+                                                    
                                                     const myRes = slotReservations.find(r => 
                                                         viewRole === 'parent' && 
                                                         isParentLocked && 
                                                         (r.childName || r.name || '').trim() === childNameTrimmed && 
-                                                        r.venue === parentForm.venue
+                                                        r.venue === parentForm.venue &&
+                                                        r.purpose === parentForm.purpose
                                                     );
 
                                                     return (
@@ -768,19 +992,23 @@
                                                             {viewRole === 'teacher' && (
                                                                 <>
                                                                     <div 
-                                                                        className="font-bold text-slate-800 flex justify-between cursor-pointer hover:text-blue-600 transition-colors"
-                                                                        onClick={() => handleEditSlot(slot.className, slot)}
+                                                                        className="font-bold text-slate-800 flex flex-col cursor-pointer hover:text-blue-600 transition-colors"
+                                                                        onClick={() => handleEditSlot(slot.className, slot.purposeName, slot)}
                                                                         title="點擊修改此時段時間"
                                                                     >
-                                                                        <span>{slot.className}</span>
-                                                                        <span className="text-[10px] bg-white px-1 rounded sketchy-border-sm">{slot.startTime}</span>
+                                                                        <div className="flex justify-between">
+                                                                            <span>{slot.className}</span>
+                                                                            <span className="text-[10px] bg-white px-1 rounded sketchy-border-sm">{slot.startTime}</span>
+                                                                        </div>
+                                                                        {(viewClass === '全部' || viewPurpose === '全部') && <span className="text-[10px] text-slate-500">{slot.purposeName}</span>}
                                                                     </div>
+                                                                    
                                                                     {slotReservations.map(r => (
                                                                         <div key={r.id} className="truncate text-slate-800 bg-white/60 p-0.5 rounded mt-0.5 cursor-pointer hover:bg-red-100 transition-colors" title={`點擊刪除 ${r.childName || r.name || '未命名'} 的預約`} onClick={() => handleCancelRes(r.id, r.pin)}>
                                                                             • {r.childName || r.name || '未命名'}
                                                                         </div>
                                                                     ))}
-                                                                    <button onClick={() => handleTeacherDeleteSlot(slot.className, slot.id)} className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-4 h-4 flex items-center justify-center opacity-0 group-hover:opacity-100" title="刪除此時段">×</button>
+                                                                    <button onClick={() => handleTeacherDeleteSlot(slot.className, slot.purposeName, slot.id)} className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-4 h-4 flex items-center justify-center opacity-0 group-hover:opacity-100" title="刪除此時段">×</button>
                                                                 </>
                                                             )}
 
@@ -822,6 +1050,7 @@
                                                 <div className="font-bold text-slate-800 text-lg">{res.childName || res.name || '未命名'}</div>
                                                 <div className="text-sm text-slate-600 mt-1">
                                                     <span className="bg-gray-200 px-2 py-0.5 rounded mr-2 font-bold">{res.venue}</span>
+                                                    <span className="text-orange-600 font-bold mr-2">[{res.purpose}]</span>
                                                     原預約時段：{res.date} {res.startTime}~{res.endTime}
                                                 </div>
                                             </div>
@@ -859,13 +1088,16 @@
                                 </button>
                             </div>
 
-                            <div className={`fixed left-0 top-16 bottom-16 w-64 md:w-72 bg-white border-2 border-l-0 border-slate-800 rounded-r-2xl shadow-2xl z-40 flex flex-col transition-transform duration-300 ${isAttendanceOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+                            <div className={`fixed left-0 top-16 bottom-16 w-64 md:w-80 bg-white border-2 border-l-0 border-slate-800 rounded-r-2xl shadow-2xl z-40 flex flex-col transition-transform duration-300 ${isAttendanceOpen ? 'translate-x-0' : '-translate-x-full'}`}>
                                 <div className="p-3 border-b-2 border-dashed border-slate-300 flex justify-between items-center bg-yellow-100 rounded-tr-xl">
                                     <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2">📋 預約點名簿</h3>
                                     <button onClick={() => setIsAttendanceOpen(false)} className="text-slate-500 hover:text-slate-800 text-2xl font-bold px-2 leading-none">&times;</button>
                                 </div>
                                 <div className="p-3 bg-slate-50 text-sm font-bold text-slate-700 text-center border-b border-slate-200">
-                                    {teacherSelectedClass === '全部' ? '🌈 全部班級' : `【${teacherSelectedClass}】`}
+                                    <span className="text-base text-blue-700">
+                                        {teacherSelectedClass === '全部' ? '🌈 全部班級' : `【${teacherSelectedClass}】`} <br/>
+                                        {teacherSelectedPurpose === '全部' ? '所有目的' : teacherSelectedPurpose}
+                                    </span>
                                     <br/>
                                     已完成登記：<span className="text-2xl text-blue-600 mx-1">{attendanceList.length}</span>位小孩
                                 </div>
@@ -875,16 +1107,118 @@
                                     ) : (
                                         attendanceList.map((child, idx) => (
                                             <div key={child.name} className="bg-white p-3 rounded-lg sketchy-border-sm text-sm shadow-sm relative hover:bg-blue-50 transition-colors">
-                                                <div className="font-bold text-slate-800 text-base mb-1">
-                                                    {idx + 1}. {child.name} <span className="text-blue-600 text-xs">(共 {child.slots.length} 筆)</span>
+                                                <div className="font-bold text-slate-800 text-base mb-1 flex items-center justify-between">
+                                                    <span>{idx + 1}. {child.name}</span>
+                                                    <span className="text-blue-600 text-xs">(共 {child.slots.length} 筆)</span>
                                                 </div>
-                                                <div className="space-y-1 mt-2">
+                                                <div className="space-y-1 mt-2 border-t border-slate-100 pt-2">
                                                     {child.slots.map(s => (
-                                                        <div key={s.id} className="text-slate-600 text-xs font-medium bg-slate-100 p-1.5 rounded">
+                                                        <div key={s.id} className="text-slate-600 text-xs font-medium bg-slate-50 p-1.5 rounded border border-slate-200">
+                                                            <div className="font-bold text-slate-700 mb-0.5 flex gap-1">
+                                                                {teacherSelectedClass === '全部' && <span className="bg-slate-200 px-1 rounded">{s.venue}</span>}
+                                                                {teacherSelectedPurpose === '全部' && <span className="bg-orange-100 text-orange-800 px-1 rounded">{s.purpose}</span>}
+                                                            </div>
                                                             📅 {s.date} 🕒 {s.startTime}~{s.endTime}
-                                                            {teacherSelectedClass === '全部' && <span className="ml-1 text-blue-600 font-bold">({s.venue})</span>}
                                                         </div>
                                                     ))}
+                                                </div>
+                                            </div>
+                                        ))
+                                    )}
+                                </div>
+                            </div>
+                        </>
+                    )}
+
+                    {/* 家長專用：左側浮動工具列 */}
+                    {role === 'parent' && (
+                        <>
+                            {/* 1. 我的預約單 */}
+                            <div className={`fixed left-0 top-1/4 z-40 transition-transform duration-300 ${isReservationSlipOpen || isNotificationOpen ? '-translate-x-full' : 'translate-x-0'}`}>
+                                <button onClick={() => setIsReservationSlipOpen(true)} className="sketchy-btn bg-green-100 text-green-900 border-2 border-l-0 border-slate-800 font-bold py-3 px-2 rounded-r-xl shadow-md flex flex-col items-center gap-1 mb-2">
+                                    <span className="text-xl">📋</span>
+                                    <span className="text-sm font-bold flex flex-col"><span>預</span><span>約</span><span>單</span></span>
+                                </button>
+                                
+                                <button onClick={() => setIsNotificationOpen(true)} className="sketchy-btn bg-yellow-100 text-yellow-900 border-2 border-l-0 border-slate-800 font-bold py-3 px-2 rounded-r-xl shadow-md flex flex-col items-center gap-1">
+                                    <span className="text-xl">🔔</span>
+                                    <span className="text-sm font-bold flex flex-col"><span>結</span><span>果</span><span>通</span><span>知</span></span>
+                                </button>
+                            </div>
+
+                            {/* 預約單 Drawer */}
+                            <div className={`fixed left-0 top-16 bottom-16 w-64 md:w-80 bg-white border-2 border-l-0 border-slate-800 rounded-r-2xl shadow-2xl z-50 flex flex-col transition-transform duration-300 ${isReservationSlipOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+                                <div className="p-3 border-b-2 border-dashed border-slate-300 flex justify-between items-center bg-green-100 rounded-tr-xl">
+                                    <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2">📋 我的預約單</h3>
+                                    <button onClick={() => setIsReservationSlipOpen(false)} className="text-slate-500 hover:text-slate-800 text-2xl font-bold px-2 leading-none">&times;</button>
+                                </div>
+                                <div className="flex-1 overflow-y-auto p-3 space-y-3 no-scrollbar bg-slate-50/50">
+                                    {parentSlipData.length === 0 ? (
+                                        <div className="text-center text-slate-400 py-6 font-bold text-sm">這部裝置目前還沒有成功預約的紀錄喔！<br/><span className="text-xs font-normal">若您已輸入姓名，將會自動抓取您的紀錄</span></div>
+                                    ) : (
+                                        parentSlipData.map((child) => (
+                                            <div key={child.name} className="bg-white p-3 rounded-lg sketchy-border-sm text-sm shadow-sm relative hover:bg-green-50 transition-colors">
+                                                <div className="font-bold text-slate-800 text-base mb-1">{child.name}</div>
+                                                {child.venues.map(venue => {
+                                                    // 分出目的
+                                                    const venueSlots = child.slots.filter(s => s.venue === venue);
+                                                    const purposesSet = new Set(venueSlots.map(s => s.purpose));
+                                                    
+                                                    return Array.from(purposesSet).map(purpose => {
+                                                        const pSet = ((classSettings[venue] || {}).purposes || {})[purpose] || { maxPerParent: 999 };
+                                                        const targetSlots = venueSlots.filter(s => s.purpose === purpose);
+                                                        const remaining = pSet.maxPerParent === 999 ? '不限' : Math.max(0, pSet.maxPerParent - targetSlots.length);
+                                                        
+                                                        return (
+                                                            <div key={`${venue}_${purpose}`} className="mt-2 border-t border-slate-200 pt-2">
+                                                                <div className="text-blue-700 font-bold text-[13px] mb-1 leading-tight">
+                                                                    【{venue}】 {purpose} <br/>
+                                                                    <span className="text-slate-500 text-[11px]">(剩餘可預約: <span className="text-red-500">{remaining}</span>)</span>
+                                                                </div>
+                                                                <div className="space-y-1">
+                                                                    {targetSlots.map(s => (
+                                                                        <div key={s.id} className="text-slate-600 text-[11px] font-medium bg-slate-100 p-1.5 rounded flex flex-col gap-1 border border-slate-200">
+                                                                            <div className="flex justify-between items-center">
+                                                                                <span>📅 {s.date} 🕒 {s.startTime}~{s.endTime}</span>
+                                                                            </div>
+                                                                            <div className="text-slate-500 flex justify-between items-center bg-white p-1 rounded sketchy-border-sm">
+                                                                                <span>確認碼: <span className="text-red-600 font-bold tracking-widest">{s.pin}</span></span>
+                                                                                <button onClick={() => { copyToClipboard(s.pin); showAlert("✅ 已複製確認碼：" + s.pin); }} className="bg-slate-200 hover:bg-slate-300 text-slate-700 px-2 rounded font-bold transition-colors">複製</button>
+                                                                            </div>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            </div>
+                                                        )
+                                                    });
+                                                })}
+                                            </div>
+                                        ))
+                                    )}
+                                </div>
+                            </div>
+                            
+                            {/* 預約結果通知 Drawer */}
+                            <div className={`fixed left-0 top-16 bottom-16 w-64 md:w-80 bg-white border-2 border-l-0 border-slate-800 rounded-r-2xl shadow-2xl z-50 flex flex-col transition-transform duration-300 ${isNotificationOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+                                <div className="p-3 border-b-2 border-dashed border-slate-300 flex justify-between items-center bg-yellow-100 rounded-tr-xl">
+                                    <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2">🔔 預約結果通知</h3>
+                                    <button onClick={() => setIsNotificationOpen(false)} className="text-slate-500 hover:text-slate-800 text-2xl font-bold px-2 leading-none">&times;</button>
+                                </div>
+                                <div className="p-3 bg-yellow-50 text-xs font-bold text-yellow-800 text-center border-b border-yellow-200">
+                                    💡 老師發布最終排班結果後，會在這裡顯示喔！
+                                </div>
+                                <div className="flex-1 overflow-y-auto p-3 space-y-3 no-scrollbar bg-slate-50/50">
+                                    {parentNotificationData.length === 0 ? (
+                                        <div className="text-center text-slate-400 py-6 font-bold text-sm">目前尚無已發布的結果通知。</div>
+                                    ) : (
+                                        parentNotificationData.map(res => (
+                                            <div key={`pub_${res.id}`} className="bg-white p-3 rounded-lg sketchy-border-sm text-sm shadow-sm relative border-l-4 border-green-500">
+                                                <div className="font-bold text-slate-800 text-base mb-1">{res.childName || res.name || '未命名'}</div>
+                                                <div className="text-blue-700 font-bold text-[12px] mb-1">
+                                                    【{res.venue}】 {res.purpose}
+                                                </div>
+                                                <div className="text-slate-600 text-xs font-medium bg-green-50 p-1.5 rounded flex items-center gap-1">
+                                                    <span>🎉 成功安排於：<br/>📅 {res.date} 🕒 {res.startTime}~{res.endTime}</span>
                                                 </div>
                                             </div>
                                         ))
@@ -939,50 +1273,59 @@
                                         <div className="flex flex-col md:flex-row gap-6">
                                             <div className="w-full md:w-1/2 space-y-4">
                                                 <div>
-                                                    <label className="block text-lg font-bold mb-1 text-slate-700">1. 選擇要管理的班級</label>
-                                                    <select 
-                                                        value={teacherSelectedClass} 
-                                                        onChange={e => setTeacherSelectedClass(e.target.value)} 
-                                                        className="sketchy-border-sm w-full px-3 py-2 bg-yellow-50 text-xl font-bold"
-                                                    >
-                                                        <option value="全部">🌈 檢視全部班級 (僅供下方月曆查詢)</option>
-                                                        {CLASS_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
-                                                    </select>
+                                                    <label className="block text-lg font-bold mb-1 text-slate-700">1. 選擇要管理的班級與目的</label>
+                                                    <div className="flex gap-2 flex-col sm:flex-row">
+                                                        <select 
+                                                            value={teacherSelectedClass} 
+                                                            onChange={e => setTeacherSelectedClass(e.target.value)} 
+                                                            className="sketchy-border-sm flex-1 px-3 py-2 bg-yellow-50 text-xl font-bold"
+                                                        >
+                                                            <option value="全部">🌈 檢視全部班級</option>
+                                                            {CLASS_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
+                                                        </select>
+                                                        <select
+                                                            value={teacherSelectedPurpose}
+                                                            onChange={handleTeacherPurposeChange}
+                                                            className="sketchy-border-sm flex-1 px-3 py-2 bg-blue-50 text-xl font-bold"
+                                                            disabled={teacherSelectedClass === '全部'}
+                                                        >
+                                                            {teacherSelectedClass === '全部' ? (
+                                                                <option value="全部">所有預約目的</option>
+                                                            ) : (
+                                                                <>
+                                                                    <option value="全部">🌈 所有預約目的</option>
+                                                                    {Object.keys((classSettings[teacherSelectedClass] || {}).purposes || {}).map(p => (
+                                                                        <option key={p} value={p}>{p}</option>
+                                                                    ))}
+                                                                    <option value="__ADD_NEW__">➕ 新增預約目的...</option>
+                                                                </>
+                                                            )}
+                                                        </select>
+                                                    </div>
                                                 </div>
 
-                                                {teacherSelectedClass !== '全部' && (
+                                                {teacherSelectedClass !== '全部' && teacherSelectedPurpose !== '全部' && (
                                                     <>
-                                                        <div className="flex flex-wrap gap-4">
-                                                            <div className="flex-1 min-w-[120px]">
-                                                                <label className="block text-sm md:text-md font-bold mb-1 text-slate-600">預約目的</label>
-                                                                <input 
-                                                                    type="text" 
-                                                                    value={teacherLocalPurpose} 
-                                                                    onChange={e => setTeacherLocalPurpose(e.target.value)} 
-                                                                    onBlur={e => updateClassSetting('purpose', teacherLocalPurpose)}
-                                                                    className="sketchy-border-sm w-full px-2 py-2" 
-                                                                    placeholder="例：親師座談會" 
-                                                                />
-                                                            </div>
-                                                            <div className="flex-1 min-w-[120px]">
-                                                                <label className="block text-sm md:text-md font-bold mb-1 text-slate-600">預約截止日期</label>
+                                                        <div className="flex flex-wrap gap-4 bg-slate-50 p-4 rounded-xl border-2 border-dashed border-slate-300">
+                                                            <div className="flex-1 min-w-[200px]">
+                                                                <label className="block text-sm md:text-md font-bold mb-1 text-slate-600">⏳ 預約截止日期</label>
                                                                 <input 
                                                                     type="date" 
-                                                                    value={(classSettings[teacherSelectedClass] || DEFAULT_CLASS_SETTINGS[teacherSelectedClass] || {}).deadline || ''} 
-                                                                    onChange={e => updateClassSetting('deadline', e.target.value)} 
-                                                                    className="sketchy-border-sm w-full px-2 py-2" 
+                                                                    value={(((classSettings[teacherSelectedClass] || {}).purposes || {})[teacherSelectedPurpose] || {}).deadline || ''} 
+                                                                    onChange={e => updatePurposeSetting('deadline', e.target.value)} 
+                                                                    className="sketchy-border-sm w-full px-2 py-2 bg-white font-bold" 
                                                                 />
                                                             </div>
-                                                            <div className="flex-1 min-w-[120px]">
+                                                            <div className="flex-1 min-w-[150px]">
                                                                 <label className="block text-sm md:text-md font-bold mb-1 text-slate-600">每人預約總數</label>
-                                                                <select value={(classSettings[teacherSelectedClass] || DEFAULT_CLASS_SETTINGS[teacherSelectedClass] || {}).maxPerParent} onChange={e => updateClassSetting('maxPerParent', Number(e.target.value))} className="sketchy-border-sm w-full px-1 py-2">
+                                                                <select value={(((classSettings[teacherSelectedClass] || {}).purposes || {})[teacherSelectedPurpose] || {}).maxPerParent} onChange={e => updatePurposeSetting('maxPerParent', Number(e.target.value))} className="sketchy-border-sm w-full px-2 py-2 bg-white font-bold">
                                                                     {[1,2,3,4,5,10].map(n => <option key={n} value={n}>{n} 個時段</option>)}
                                                                     <option value={999}>不限</option>
                                                                 </select>
                                                             </div>
-                                                            <div className="flex-1 min-w-[120px]">
+                                                            <div className="flex-1 min-w-[150px]">
                                                                 <label className="block text-sm md:text-md font-bold mb-1 text-slate-600">時段切割方式</label>
-                                                                <select value={(classSettings[teacherSelectedClass] || DEFAULT_CLASS_SETTINGS[teacherSelectedClass] || {}).duration} onChange={e => updateClassSetting('duration', Number(e.target.value))} className="sketchy-border-sm w-full px-1 py-2">
+                                                                <select value={(((classSettings[teacherSelectedClass] || {}).purposes || {})[teacherSelectedPurpose] || {}).duration} onChange={e => updatePurposeSetting('duration', Number(e.target.value))} className="sketchy-border-sm w-full px-2 py-2 bg-white font-bold">
                                                                     <option value={30}>每半小時 (30分)</option>
                                                                     <option value={60}>每小時 (60分)</option>
                                                                 </select>
@@ -993,8 +1336,8 @@
                                                             <textarea 
                                                                 value={teacherLocalNote} 
                                                                 onChange={e => setTeacherLocalNote(e.target.value)} 
-                                                                onBlur={e => updateClassSetting('notes', teacherLocalNote)}
-                                                                className="sketchy-border-sm w-full px-3 py-2 h-20 text-sm"
+                                                                onBlur={e => updatePurposeSetting('notes', teacherLocalNote)}
+                                                                className="sketchy-border-sm w-full px-3 py-2 h-20 text-sm bg-white"
                                                                 placeholder="例如：請記得戴口罩、準時抵達..."
                                                             />
                                                         </div>
@@ -1002,7 +1345,7 @@
                                                 )}
                                             </div>
 
-                                            {teacherSelectedClass !== '全部' && (
+                                            {teacherSelectedClass !== '全部' && teacherSelectedPurpose !== '全部' && (
                                                 <div className="w-full md:w-1/2 bg-blue-50 p-4 sketchy-border-sm rounded-xl space-y-4">
                                                     <h3 className="font-bold text-blue-800 text-lg">2. {isEditingSlot ? '修改可預約時段' : '新增可預約時段 (開放給家長選)'}</h3>
                                                     <div>
@@ -1043,12 +1386,18 @@
                                                     ) : (
                                                         <button onClick={handleAddSlots} className="sketchy-btn sketchy-border-sm w-full py-2 bg-slate-800 text-white font-bold mt-2">產生開放時段</button>
                                                     )}
+                                                    
+                                                    <div className="border-t border-blue-200 mt-4 pt-4 flex justify-end">
+                                                        <button onClick={exportGAS} className="sketchy-btn sketchy-border-sm px-4 py-2 bg-yellow-50 text-yellow-800 font-bold flex items-center gap-2">
+                                                            <span>📜</span> 匯出 Google 表單 (GAS)
+                                                        </button>
+                                                    </div>
                                                 </div>
                                             )}
                                         </div>
                                     </div>
                                     
-                                    {renderCalendarView('teacher', teacherSelectedClass)}
+                                    {renderCalendarView('teacher', teacherSelectedClass, teacherSelectedPurpose)}
                                 </>
                             ) : (
                                 // --- 排班板 (Board Tab) ---
@@ -1056,7 +1405,7 @@
                                     <div className="flex flex-col md:flex-row items-center justify-between gap-4 bg-blue-50 p-4 rounded-xl sketchy-border-sm">
                                         <div>
                                             <h3 className="text-xl font-bold text-blue-800">🧩 最終安排排班板</h3>
-                                            <p className="text-sm text-blue-700 font-medium">請選擇班級後，載入最新的預約資料進行拖曳排班。<br/>此處的修改是獨立的一份，不會影響到原本的家長預約紀錄喔！</p>
+                                            <p className="text-sm text-blue-700 font-medium">請選擇班級與目的後，載入最新的預約資料進行拖曳排班。<br/>此處的修改不會影響原本的家長預約紀錄喔！</p>
                                         </div>
                                         <div className="flex flex-col sm:flex-row gap-2">
                                             <select 
@@ -1066,29 +1415,50 @@
                                             >
                                                 {CLASS_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
                                             </select>
-                                            <button onClick={handleLoadBoardData} className="sketchy-btn sketchy-border-sm px-4 py-2 bg-blue-600 text-white font-bold whitespace-nowrap">
-                                                📥 載入最新家長預約
-                                            </button>
-                                            <button onClick={exportBoardToExcel} className="sketchy-btn sketchy-border-sm px-4 py-2 bg-green-600 text-white font-bold flex items-center gap-2 whitespace-nowrap">
-                                                <span>📊</span> 匯出最終排班表
-                                            </button>
+                                            <select
+                                                value={teacherSelectedPurpose}
+                                                onChange={handleTeacherPurposeChange}
+                                                className="sketchy-border-sm px-3 py-2 bg-yellow-50 text-lg font-bold"
+                                                disabled={teacherSelectedClass === '全部'}
+                                            >
+                                                {teacherSelectedClass === '全部' ? (
+                                                    <option value="全部">所有預約目的</option>
+                                                ) : (
+                                                    Object.keys((classSettings[teacherSelectedClass] || {}).purposes || {}).map(p => (
+                                                        <option key={p} value={p}>{p}</option>
+                                                    ))
+                                                )}
+                                            </select>
                                         </div>
                                     </div>
+                                    
+                                    <div className="flex flex-wrap gap-2 justify-center md:justify-end border-b-2 border-dashed border-slate-300 pb-4">
+                                        <button onClick={handleLoadBoardData} className="sketchy-btn sketchy-border-sm px-4 py-2 bg-blue-600 text-white font-bold whitespace-nowrap">
+                                            📥 載入最新家長預約
+                                        </button>
+                                        <button onClick={handleAutoResolveBoard} className="sketchy-btn sketchy-border-sm px-4 py-2 bg-yellow-500 hover:bg-yellow-600 text-white font-bold whitespace-nowrap">
+                                            ✨ 一鍵自動排班
+                                        </button>
+                                        <button onClick={handlePublishBoard} className="sketchy-btn sketchy-border-sm px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white font-bold whitespace-nowrap">
+                                            📢 發布結果給家長
+                                        </button>
+                                        <button onClick={exportBoardToExcel} className="sketchy-btn sketchy-border-sm px-4 py-2 bg-green-600 text-white font-bold flex items-center gap-2 whitespace-nowrap">
+                                            <span>📊</span> 匯出最終排班表
+                                        </button>
+                                    </div>
 
-                                    {/* 修改為 Flex-wrap 允許自動往下延展 */}
                                     <div className="flex flex-wrap gap-6 pb-4 pt-2 items-start justify-center md:justify-start">
                                         {(() => {
-                                            const cSet = classSettings[teacherSelectedClass] || {};
+                                            const cSet = ((classSettings[teacherSelectedClass] || {}).purposes || {})[teacherSelectedPurpose] || {};
                                             const bData = cSet.boardData || [];
                                             
-                                            // 收集所有在設定中與備份資料中存在的日期
                                             const allDatesSet = new Set([
                                                 ...(cSet.slots || []).map(s => s.date),
                                                 ...bData.map(r => r.date)
                                             ]);
                                             const allDates = Array.from(allDatesSet).sort();
 
-                                            if (allDates.length === 0) return <div className="text-slate-400 font-bold p-4 w-full text-center">目前沒有任何時段或預約資料。</div>;
+                                            if (allDates.length === 0) return <div className="text-slate-400 font-bold p-4 w-full text-center">請先載入預約，或新增開放時段喔！</div>;
 
                                             return allDates.map(date => {
                                                 const slotsForDate = [];
@@ -1130,7 +1500,7 @@
                                                                 return (
                                                                     <div 
                                                                         key={`${slot.date}_${slot.startTime}`}
-                                                                        className={`p-3 rounded-lg sketchy-border-sm flex flex-col ${isConflict ? 'bg-red-100 border-red-400 border-2' : isBestChoice ? 'bg-green-50 border-green-400 border-2' : 'bg-white'}`}
+                                                                        className={`p-3 rounded-lg sketchy-border-sm flex flex-col ${isConflict ? 'bg-red-100 border-red-400 border-2' : isBestChoice ? 'bg-green-50 border-green-400 border-2' : 'bg-white border border-slate-300'}`}
                                                                         onDragOver={e => e.preventDefault()}
                                                                         onDrop={e => handleBoardDrop(e, slot)}
                                                                     >
@@ -1166,10 +1536,6 @@
                                             });
                                         })()}
                                     </div>
-                                    
-                                    <div className="text-slate-500 font-bold text-sm text-center mt-2">
-                                        💡 提示：按住小孩的卡片拖曳到其他格子即可排班！<br/>如果某個時段只有一位小孩，系統會自動標示為「⭐ 該小孩的最佳選取時段」，建議優先保留給他喔！
-                                    </div>
                                 </div>
                             )}
                         </div>
@@ -1182,37 +1548,43 @@
                                 <button onClick={() => setRole(null)} className="sketchy-btn sketchy-border-sm px-4 py-2 bg-slate-200 font-bold">登出回首頁</button>
                             </div>
 
-                            {/* 目的與截止日期 醒目橫幅 */}
-                            <div className="text-center mb-8 bg-orange-50 p-6 rounded-2xl sketchy-border border-orange-300">
-                                <h2 className="text-4xl md:text-5xl font-black text-orange-600 mb-3 tracking-wide">{currentParentSettings.purpose || '預約活動'}</h2>
-                                {currentParentSettings.deadline && (
-                                    <p className="text-xl md:text-2xl font-bold text-red-600 bg-white inline-block px-4 py-1 rounded-full border-2 border-red-200 shadow-sm">
-                                        ⏳ 預約截止日期：{currentParentSettings.deadline}
-                                    </p>
-                                )}
-                            </div>
-
                             <div className="sketchy-border p-6 bg-white relative">
                                 <form onSubmit={handleParentSubmit} className="space-y-6">
                                     <div className="flex flex-col md:flex-row gap-6">
                                         <div className="w-full md:w-1/2 space-y-4">
                                             
                                             <div>
-                                                <label className="block text-lg font-bold mb-1 text-slate-700">1. 選擇小孩的班級</label>
-                                                <select 
-                                                    value={parentForm.venue} 
-                                                    onChange={e => setParentForm({...parentForm, venue: e.target.value})} 
-                                                    className="sketchy-border-sm w-full px-3 py-2 bg-yellow-50 text-xl font-bold"
-                                                    disabled={isParentLocked}
-                                                >
-                                                    {CLASS_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
-                                                </select>
+                                                <label className="block text-lg font-bold mb-1 text-slate-700">1. 選擇班級與預約目的</label>
+                                                <div className="flex flex-col gap-2">
+                                                    <select 
+                                                        value={parentForm.venue} 
+                                                        onChange={e => setParentForm({...parentForm, venue: e.target.value})} 
+                                                        className="sketchy-border-sm w-full px-3 py-2 bg-yellow-50 text-xl font-bold"
+                                                        disabled={isParentLocked}
+                                                    >
+                                                        {CLASS_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
+                                                    </select>
+                                                    <select 
+                                                        value={parentForm.purpose} 
+                                                        onChange={e => setParentForm({...parentForm, purpose: e.target.value})} 
+                                                        className="sketchy-border-sm w-full px-3 py-2 bg-blue-50 text-xl font-bold"
+                                                        disabled={isParentLocked}
+                                                    >
+                                                        {Object.keys((classSettings[parentForm.venue] || {}).purposes || {}).length === 0 ? (
+                                                            <option value="" disabled>目前無開放預約</option>
+                                                        ) : (
+                                                            Object.keys((classSettings[parentForm.venue] || {}).purposes || {}).map(p => (
+                                                                <option key={p} value={p}>{p}</option>
+                                                            ))
+                                                        )}
+                                                    </select>
+                                                </div>
                                             </div>
-                                            
+
                                             {currentParentSettings.notes && (
-                                                <div className="bg-blue-50 border-l-4 border-blue-400 p-3 sketchy-border-sm">
-                                                    <div className="font-bold text-blue-800 flex items-center gap-1"><span>📌</span> 老師叮嚀：</div>
-                                                    <div className="text-sm text-blue-700 whitespace-pre-wrap">{currentParentSettings.notes}</div>
+                                                <div className="bg-orange-50 border-l-4 border-orange-400 p-3 sketchy-border-sm">
+                                                    <div className="font-bold text-orange-800 flex items-center gap-1"><span>📌</span> 老師叮嚀：</div>
+                                                    <div className="text-sm text-orange-700 whitespace-pre-wrap">{currentParentSettings.notes}</div>
                                                 </div>
                                             )}
 
@@ -1231,6 +1603,7 @@
 
                                             {!isParentLocked ? (
                                                 <button type="button" onClick={() => {
+                                                    if (!parentForm.purpose) return showAlert("請先選擇預約目的喔！");
                                                     if (!parentForm.childName.trim()) return showAlert("請輸入小孩的名字喔！");
                                                     setIsParentLocked(true);
                                                 }} className="sketchy-btn sketchy-border-sm w-full py-3 bg-blue-600 text-white font-bold text-xl mt-4">
@@ -1257,7 +1630,7 @@
                                                 <h3 className="font-bold text-green-800 text-lg">3. 選擇預約時段</h3>
                                                 
                                                 {availableDates.length === 0 ? (
-                                                    <div className="text-center text-slate-500 py-4 font-bold">老師尚未開放任何預約時段喔！</div>
+                                                    <div className="text-center text-slate-500 py-4 font-bold">目前尚未開放任何預約時段喔！</div>
                                                 ) : (
                                                     <>
                                                         <div>
@@ -1299,18 +1672,58 @@
                                 </form>
                             </div>
                             
-                            {isParentLocked && renderCalendarView('parent', parentForm.venue)}
+                            {isParentLocked && (
+                                <>
+                                    {/* 目的與截止日期 醒目橫幅 */}
+                                    <div className="text-center mt-8 mb-6 relative">
+                                        <div className="bg-orange-50 inline-block p-4 md:p-6 rounded-2xl sketchy-border border-orange-300 w-full max-w-2xl shadow-lg">
+                                            <h2 className="text-4xl md:text-5xl font-black text-orange-600 mb-2 tracking-wide leading-tight">{parentForm.purpose || '預約活動'}</h2>
+                                            {currentParentSettings.deadline && (
+                                                <div className="text-lg md:text-2xl font-bold text-red-600 bg-white inline-block px-5 py-2 rounded-full border-2 border-red-200 shadow-sm mt-2">
+                                                    ⏳ 預約截止日：{currentParentSettings.deadline}
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                    
+                                    {/* 倒數計時 */}
+                                    {(() => {
+                                        if (!currentParentSettings.deadline) return null;
+                                        const today = new Date();
+                                        today.setHours(0,0,0,0);
+                                        const dlDate = new Date(currentParentSettings.deadline);
+                                        dlDate.setHours(0,0,0,0);
+                                        const diffDays = Math.ceil((dlDate - today) / 86400000);
+                                        
+                                        return (
+                                            <div className="text-center mb-6">
+                                                {diffDays < 0 ? (
+                                                    <span className="bg-red-600 text-white font-black text-xl md:text-2xl px-6 py-2 rounded-full sketchy-border-sm shadow-md animate-pulse">⚠️ 預約已截止</span>
+                                                ) : diffDays === 0 ? (
+                                                    <span className="bg-orange-500 text-white font-black text-xl md:text-2xl px-6 py-2 rounded-full sketchy-border-sm shadow-md animate-pulse">⏳ 今天是最後一天！</span>
+                                                ) : (
+                                                    <span className="bg-green-500 text-white font-black text-xl md:text-2xl px-6 py-2 rounded-full sketchy-border-sm shadow-md animate-subtle-bounce inline-block">⏳ 距離結束還有 {diffDays} 天！</span>
+                                                )}
+                                            </div>
+                                        );
+                                    })()}
+                                    
+                                    {renderCalendarView('parent', parentForm.venue, parentForm.purpose)}
+                                </>
+                            )}
                         </div>
                     )}
 
                     {/* 共用 Dialog */}
                     {dialog.isOpen && (
-                        <div className="fixed inset-0 bg-slate-900 bg-opacity-40 flex items-center justify-center z-50 px-4">
-                            <div className="bg-white p-6 md:p-8 rounded-2xl sketchy-border max-w-sm w-full shadow-2xl transform scale-100 transition-transform">
+                        <div className={`fixed inset-0 bg-slate-900 bg-opacity-40 flex items-center justify-center z-50 px-4`}>
+                            <div className={`bg-white p-6 md:p-8 rounded-2xl sketchy-border w-full shadow-2xl transform scale-100 transition-transform ${dialog.type === 'gas' ? 'max-w-2xl' : 'max-w-sm'}`}>
                                 <h3 className="text-2xl font-bold text-slate-800 mb-4">
-                                    {dialog.type === 'confirm' ? '🤔 請確認' : dialog.type === 'pin' ? '🔐 權限驗證' : dialog.type === 'show-pin' ? '🎉 預約成功' : '💡 提示'}
+                                    {dialog.type === 'confirm' ? '🤔 請確認' : dialog.type === 'pin' ? '🔐 權限驗證' : dialog.type === 'show-pin' ? '🎉 預約成功' : dialog.type === 'gas' ? '📜 產生 GAS 腳本' : dialog.type === 'prompt' ? '📝 新增項目' : '💡 提示'}
                                 </h3>
-                                {dialog.type !== 'show-pin' && <div className="text-xl text-slate-600 mb-6 whitespace-pre-wrap leading-relaxed">{dialog.message}</div>}
+                                
+                                {dialog.type !== 'show-pin' && dialog.type !== 'gas' && <div className="text-xl text-slate-600 mb-6 whitespace-pre-wrap leading-relaxed">{dialog.message}</div>}
+                                
                                 {dialog.type === 'show-pin' && (
                                     <div className="mb-6 text-slate-600">
                                         <div className="text-xl whitespace-pre-wrap leading-relaxed mb-4">{dialog.message}</div>
@@ -1321,22 +1734,58 @@
                                         <div className="text-md text-red-600 font-bold whitespace-pre-wrap leading-relaxed">{dialog.warning}</div>
                                     </div>
                                 )}
+
+                                {dialog.type === 'gas' && (
+                                    <div className="flex flex-col items-center w-full mb-6">
+                                        <div className="text-sm text-slate-600 mb-2 w-full font-bold">
+                                            {dialog.message}
+                                        </div>
+                                        <textarea
+                                            readOnly
+                                            value={dialog.gasCode}
+                                            className="sketchy-border-sm w-full p-3 h-48 text-xs font-mono bg-slate-50 whitespace-pre"
+                                        />
+                                        <button onClick={() => { copyToClipboard(dialog.gasCode); setIsCopied(true); setTimeout(() => setIsCopied(false), 2000); }} className={`mt-3 sketchy-btn sketchy-border-sm px-4 py-2 font-bold text-sm transition-colors ${isCopied ? 'bg-green-600 text-white' : 'bg-slate-800 text-white'}`}>
+                                            {isCopied ? '已複製 ✓' : '複製代碼'}
+                                        </button>
+                                    </div>
+                                )}
+
                                 {dialog.type === 'pin' && (
                                     <div className="flex flex-col items-center">
                                         <input type="text" value={pinInput} onChange={(e) => setPinInput(e.target.value)} placeholder="請輸入密碼" className="sketchy-border-sm w-full px-4 py-2 text-2xl mb-4 text-center tracking-[0.5em] font-bold text-slate-700 bg-slate-50" />
                                     </div>
                                 )}
+                                
+                                {dialog.type === 'prompt' && (
+                                    <div className="flex flex-col items-center w-full mb-4">
+                                        <input type="text" value={promptInput} onChange={(e) => setPromptInput(e.target.value)} placeholder="請輸入名稱" className="sketchy-border-sm w-full px-4 py-2 text-xl text-center font-bold text-slate-700 bg-slate-50" />
+                                    </div>
+                                )}
+
                                 <div className="flex justify-end gap-3">
-                                    {(dialog.type === 'confirm' || dialog.type === 'pin') && <button onClick={() => setDialog({ ...dialog, isOpen: false })} className="sketchy-btn sketchy-border-sm px-5 py-2 bg-gray-100 text-slate-700 font-bold text-lg">取消</button>}
-                                    <button onClick={() => {
-                                        if (dialog.type === 'pin') {
-                                            if (String(pinInput) === String(dialog.expectedPin) || String(pinInput) === "8888") {
+                                    {(dialog.type === 'confirm' || dialog.type === 'pin' || dialog.type === 'prompt') && <button onClick={() => setDialog({ ...dialog, isOpen: false })} className="sketchy-btn sketchy-border-sm px-5 py-2 bg-gray-100 text-slate-700 font-bold text-lg">取消</button>}
+                                    
+                                    {dialog.type === 'gas' ? (
+                                        <button onClick={() => setDialog({ ...dialog, isOpen: false })} className="sketchy-btn sketchy-border-sm px-5 py-2 bg-slate-800 text-white font-bold text-lg">關閉</button>
+                                    ) : (
+                                        <button onClick={() => {
+                                            if (dialog.type === 'pin') {
+                                                if (String(pinInput) === String(dialog.expectedPin) || String(pinInput) === "8888") {
+                                                    if (dialog.onConfirm) dialog.onConfirm(); setDialog({ ...dialog, isOpen: false });
+                                                } else { setDialog({ isOpen: true, message: '❌ 密碼錯誤！\n請重新確認後再試。', type: 'alert', onConfirm: null }); }
+                                            } else if (dialog.type === 'prompt') {
+                                                if (promptInput && promptInput.trim()) {
+                                                    if (dialog.onConfirm) dialog.onConfirm(promptInput.trim());
+                                                    setDialog({ ...dialog, isOpen: false });
+                                                } else { 
+                                                    setDialog({ isOpen: true, message: '❌ 名稱不能為空！\n請重新操作。', type: 'alert', onConfirm: null }); 
+                                                }
+                                            } else {
                                                 if (dialog.onConfirm) dialog.onConfirm(); setDialog({ ...dialog, isOpen: false });
-                                            } else { setDialog({ isOpen: true, message: '❌ 密碼錯誤！\n請重新確認後再試。', type: 'alert', onConfirm: null }); }
-                                        } else {
-                                            if (dialog.onConfirm) dialog.onConfirm(); setDialog({ ...dialog, isOpen: false });
-                                        }
-                                    }} className="sketchy-btn sketchy-border-sm px-5 py-2 bg-slate-800 text-white font-bold text-lg">確定</button>
+                                            }
+                                        }} className="sketchy-btn sketchy-border-sm px-5 py-2 bg-slate-800 text-white font-bold text-lg">確定</button>
+                                    )}
                                 </div>
                             </div>
                         </div>
