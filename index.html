@@ -1233,42 +1233,93 @@
                                 </button>
                             </div>
 
-                            <div className={`fixed left-0 top-16 bottom-16 w-64 md:w-80 bg-white border-2 border-l-0 border-slate-800 rounded-r-2xl shadow-2xl z-40 flex flex-col transition-transform duration-300 ${isAttendanceOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+                            <div className={`fixed left-0 top-4 bottom-4 w-[85vw] sm:w-[350px] md:w-[420px] bg-white border-2 border-l-0 border-slate-800 rounded-r-2xl shadow-2xl z-40 flex flex-col transition-transform duration-300 ${isAttendanceOpen ? 'translate-x-0' : '-translate-x-full'}`}>
                                 <div className="p-3 border-b-2 border-dashed border-slate-300 flex justify-between items-center bg-yellow-100 rounded-tr-xl">
                                     <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2">📋 預約點名簿</h3>
                                     <button onClick={() => setIsAttendanceOpen(false)} className="text-slate-500 hover:text-slate-800 text-2xl font-bold px-2 leading-none">&times;</button>
                                 </div>
-                                <div className="p-3 bg-slate-50 text-sm font-bold text-slate-700 text-center border-b border-slate-200">
-                                    <span className="text-base text-blue-700">
-                                        {teacherSelectedClass === '全部' ? '🌈 全部班級' : `【${teacherSelectedClass}】`} <br/>
-                                        {teacherSelectedPurpose === '全部' ? '所有目的' : teacherSelectedPurpose}
-                                    </span>
-                                    <br/>
-                                    已完成登記：<span className="text-2xl text-blue-600 mx-1">{attendanceList.length}</span>位小孩
+                                <div className="p-3 bg-slate-50 text-sm font-bold text-slate-700 text-center border-b border-slate-200 flex flex-col gap-2">
+                                    <div>
+                                        <span className="text-base text-blue-700">
+                                            {teacherSelectedClass === '全部' ? '🌈 全部班級' : `【${teacherSelectedClass}】`} <br/>
+                                            {teacherSelectedPurpose === '全部' ? '所有目的' : teacherSelectedPurpose}
+                                        </span>
+                                        <br/>
+                                        已完成登記：<span className="text-2xl text-blue-600 mx-1">{attendanceList.length}</span>位小孩
+                                    </div>
+                                    
+                                    {attendanceList.length > 0 && (
+                                        <select 
+                                            className="sketchy-border-sm w-full px-2 py-1 text-sm font-bold bg-white text-slate-700 outline-none cursor-pointer"
+                                            onChange={(e) => {
+                                                if (e.target.value) {
+                                                    const el = document.getElementById(`attendance-child-${e.target.value}`);
+                                                    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                                                    e.target.value = ''; // 捲動後歸零選單
+                                                }
+                                            }}
+                                        >
+                                            <option value="">🔍 快速尋找跳轉到小孩...</option>
+                                            {attendanceList.map(child => {
+                                                // 動態計算此小孩是否有「未選滿」的狀況，以顯示在選單中
+                                                let isIncomplete = false;
+                                                child.purposes.forEach(p => {
+                                                    child.venues.forEach(v => {
+                                                        const pSet = ((classSettings[v] || {}).purposes || {})[p] || {};
+                                                        const maxReq = pSet.maxPerParent || 999;
+                                                        const currentCount = child.slots.filter(s => s.venue === v && s.purpose === p).length;
+                                                        if (maxReq !== 999 && currentCount > 0 && currentCount < maxReq) {
+                                                            isIncomplete = true;
+                                                        }
+                                                    });
+                                                });
+                                                return (
+                                                    <option key={child.name} value={child.name}>
+                                                        {child.name} {isIncomplete ? '(⚠️ 未滿)' : ''}
+                                                    </option>
+                                                );
+                                            })}
+                                        </select>
+                                    )}
                                 </div>
                                 <div className="flex-1 overflow-y-auto p-3 space-y-3 no-scrollbar bg-slate-50/50">
                                     {attendanceList.length === 0 ? (
                                         <div className="text-center text-slate-400 py-6 font-bold text-sm">目前尚無預約資料</div>
                                     ) : (
-                                        attendanceList.map((child, idx) => (
-                                            <div key={child.name} className="bg-white p-3 rounded-lg sketchy-border-sm text-sm shadow-sm relative hover:bg-blue-50 transition-colors">
-                                                <div className="font-bold text-slate-800 text-base mb-1 flex items-center justify-between">
-                                                    <span>{idx + 1}. {child.name}</span>
-                                                    <span className="text-blue-600 text-xs">(共 {child.slots.length} 筆)</span>
-                                                </div>
-                                                <div className="space-y-1 mt-2 border-t border-slate-100 pt-2">
-                                                    {child.slots.map(s => (
-                                                        <div key={s.id} className="text-slate-600 text-xs font-medium bg-slate-50 p-1.5 rounded border border-slate-200">
-                                                            <div className="font-bold text-slate-700 mb-0.5 flex gap-1">
-                                                                {teacherSelectedClass === '全部' && <span className="bg-slate-200 px-1 rounded">{s.venue}</span>}
-                                                                {teacherSelectedPurpose === '全部' && <span className="bg-orange-100 text-orange-800 px-1 rounded">{s.purpose}</span>}
+                                        attendanceList.map((child, idx) => {
+                                            // 動態計算此小孩是否有「未選滿」的狀況
+                                            let isIncomplete = false;
+                                            child.purposes.forEach(p => {
+                                                child.venues.forEach(v => {
+                                                    const pSet = ((classSettings[v] || {}).purposes || {})[p] || {};
+                                                    const maxReq = pSet.maxPerParent || 999;
+                                                    const currentCount = child.slots.filter(s => s.venue === v && s.purpose === p).length;
+                                                    if (maxReq !== 999 && currentCount > 0 && currentCount < maxReq) {
+                                                        isIncomplete = true;
+                                                    }
+                                                });
+                                            });
+
+                                            return (
+                                                <div key={child.name} id={`attendance-child-${child.name}`} className={`p-3 rounded-lg sketchy-border-sm text-sm shadow-sm relative transition-colors ${isIncomplete ? 'bg-red-50 border-red-300 border-2' : 'bg-white hover:bg-blue-50'}`}>
+                                                    <div className={`font-bold text-base mb-1 flex items-center justify-between ${isIncomplete ? 'text-red-800' : 'text-slate-800'}`}>
+                                                        <span>{idx + 1}. {child.name} {isIncomplete && <span className="text-red-500 text-xs ml-1 bg-red-100 px-1 rounded border border-red-200">⚠️ 未滿</span>}</span>
+                                                        <span className={`${isIncomplete ? 'text-red-600' : 'text-blue-600'} text-xs`}>(共 {child.slots.length} 筆)</span>
+                                                    </div>
+                                                    <div className="space-y-1 mt-2 border-t border-slate-100 pt-2">
+                                                        {child.slots.map(s => (
+                                                            <div key={s.id} className={`text-xs font-medium p-1.5 rounded border ${isIncomplete ? 'bg-white border-red-200 text-red-700' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>
+                                                                <div className={`font-bold mb-0.5 flex gap-1 ${isIncomplete ? 'text-red-800' : 'text-slate-700'}`}>
+                                                                    {teacherSelectedClass === '全部' && <span className={`${isIncomplete ? 'bg-red-100' : 'bg-slate-200'} px-1 rounded`}>{s.venue}</span>}
+                                                                    {teacherSelectedPurpose === '全部' && <span className="bg-orange-100 text-orange-800 px-1 rounded">{s.purpose}</span>}
+                                                                </div>
+                                                                📅 {s.date} 🕒 {s.startTime}~{s.endTime}
                                                             </div>
-                                                            📅 {s.date} 🕒 {s.startTime}~{s.endTime}
-                                                        </div>
-                                                    ))}
+                                                        ))}
+                                                    </div>
                                                 </div>
-                                            </div>
-                                        ))
+                                            );
+                                        })
                                     )}
                                 </div>
                             </div>
@@ -1292,7 +1343,7 @@
                             </div>
 
                             {/* 預約單 Drawer */}
-                            <div className={`fixed left-0 top-16 bottom-16 w-64 md:w-80 bg-white border-2 border-l-0 border-slate-800 rounded-r-2xl shadow-2xl z-50 flex flex-col transition-transform duration-300 ${isReservationSlipOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+                            <div className={`fixed left-0 top-4 bottom-4 w-[85vw] sm:w-[350px] md:w-[420px] bg-white border-2 border-l-0 border-slate-800 rounded-r-2xl shadow-2xl z-50 flex flex-col transition-transform duration-300 ${isReservationSlipOpen ? 'translate-x-0' : '-translate-x-full'}`}>
                                 <div className="p-3 border-b-2 border-dashed border-slate-300 flex justify-between items-center bg-green-100 rounded-tr-xl">
                                     <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2">📋 我的預約單</h3>
                                     <button onClick={() => setIsReservationSlipOpen(false)} className="text-slate-500 hover:text-slate-800 text-2xl font-bold px-2 leading-none">&times;</button>
@@ -1344,7 +1395,7 @@
                             </div>
                             
                             {/* 預約結果通知 Drawer */}
-                            <div className={`fixed left-0 top-16 bottom-16 w-64 md:w-80 bg-white border-2 border-l-0 border-slate-800 rounded-r-2xl shadow-2xl z-50 flex flex-col transition-transform duration-300 ${isNotificationOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+                            <div className={`fixed left-0 top-4 bottom-4 w-[85vw] sm:w-[350px] md:w-[420px] bg-white border-2 border-l-0 border-slate-800 rounded-r-2xl shadow-2xl z-50 flex flex-col transition-transform duration-300 ${isNotificationOpen ? 'translate-x-0' : '-translate-x-full'}`}>
                                 <div className="p-3 border-b-2 border-dashed border-slate-300 flex justify-between items-center bg-yellow-100 rounded-tr-xl">
                                     <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2">🔔 預約結果通知</h3>
                                     <button onClick={() => setIsNotificationOpen(false)} className="text-slate-500 hover:text-slate-800 text-2xl font-bold px-2 leading-none">&times;</button>
