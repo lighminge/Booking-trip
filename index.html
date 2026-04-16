@@ -20,6 +20,9 @@
     <script src="https://www.gstatic.com/firebasejs/10.10.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.10.0/firebase-firestore-compat.js"></script>
     
+    <!-- 引入 html2canvas 供匯出圖片使用 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+
     <!-- 引入 Google Fonts: Kalam -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,7 +112,8 @@
 </head>
 <body class="p-4 md:p-8">
 
-    <div id="root" class="max-w-6xl mx-auto"></div>
+    <!-- 放寬最大寬度，讓排班板能完美呈現三欄 -->
+    <div id="root" class="max-w-7xl mx-auto w-full"></div>
 
     <script type="text/babel">
         const { useState, useEffect, useMemo } = React;
@@ -205,7 +209,7 @@
             const [isReservationSlipOpen, setIsReservationSlipOpen] = useState(false);
             const [isNotificationOpen, setIsNotificationOpen] = useState(false);
             
-            // --- 新增：未讀通知追蹤狀態 ---
+            // 未讀通知追蹤狀態
             const [hasUnreadNotification, setHasUnreadNotification] = useState(false);
             const [prevNotifCount, setPrevNotifCount] = useState(0);
 
@@ -335,7 +339,6 @@
                         if (pData.isPublished && pData.publishedData) {
                             pData.publishedData.forEach(r => {
                                 const rName = (r.childName || r.name || '').trim();
-                                // 如果有輸入姓名就只比對姓名，沒輸入的話就檢查瀏覽器記憶體
                                 let isMatch = (mySavedPins[r.id] === r.pin) || (childNameTrimmed && rName === childNameTrimmed);
 
                                 if (isMatch) {
@@ -350,7 +353,7 @@
                 return results.sort((a, b) => (a.date + a.startTime).localeCompare(b.date + b.startTime));
             }, [classSettings, childNameTrimmed, mySavedPins, role]);
 
-            // --- 新增：監聽結果數量，觸發跳動的未讀提醒 ---
+            // 監聽結果數量，觸發跳動的未讀提醒
             useEffect(() => {
                 if (role === 'parent' && parentNotificationData.length > prevNotifCount) {
                     setHasUnreadNotification(true);
@@ -581,7 +584,7 @@
                                 }
                             };
                             if (useLocalMode) saveLocal(null, newSettings);
-                            else dbSettings.set({ classes: newSettings }); // Remove merge: true to effectively delete
+                            else dbSettings.set({ classes: newSettings }); 
                             return newSettings;
                         });
                         setTeacherSelectedPurpose(newName);
@@ -611,7 +614,7 @@
                             }
                         };
                         if (useLocalMode) saveLocal(null, newSettings);
-                        else dbSettings.set({ classes: newSettings }); // Remove merge: true to effectively delete
+                        else dbSettings.set({ classes: newSettings }); 
                         
                         const remainingKeys = Object.keys(updatedPurposes);
                         setTeacherSelectedPurpose(remainingKeys.length > 0 ? remainingKeys[0] : '');
@@ -661,6 +664,11 @@
                 if (startStr >= endStr) return showAlert("結束時間必須晚於開始時間喔！");
                 
                 const currentSettings = ((classSettings[teacherSelectedClass] || {}).purposes || {})[teacherSelectedPurpose] || {};
+                
+                const todayStr = formatDate(new Date());
+                if (currentSettings.deadline && todayStr > currentSettings.deadline) {
+                    return showAlert("⚠️ 無法操作！\n\n此活動的預約截止日期已過，系統已鎖定，無法再新增或修改時段喔！");
+                }
                 
                 if (isEditingSlot) {
                     const newSlots = (currentSettings.slots || []).map(s => 
@@ -714,6 +722,12 @@
             };
 
             const handleEditSlot = (cName, pName, slot) => {
+                const pSet = ((classSettings[cName] || {}).purposes || {})[pName] || {};
+                const todayStr = formatDate(new Date());
+                if (pSet.deadline && todayStr > pSet.deadline) {
+                    return showAlert("⚠️ 無法修改！\n\n此活動的預約截止日期已過，系統已鎖定，無法再修改開放時段喔！");
+                }
+
                 setTeacherSelectedClass(cName);
                 setTeacherSelectedPurpose(pName);
                 setTeacherSlotForm({
@@ -762,7 +776,7 @@
                 updatePurposeSetting('boardData', newBoardData);
             };
 
-            // 智慧自動排班：回溯演算法 (計算所有可能性) + 最大二分圖匹配 (DFS防呆)
+            // 智慧自動排班
             const handleAutoResolveBoard = () => {
                 if (teacherSelectedClass === '全部' || teacherSelectedPurpose === '全部') return showAlert("請先選擇單一班級與目的來進行自動排班喔！");
                 
@@ -776,14 +790,12 @@
                     childrenMap[name].push(r);
                 });
 
-                // 優先安排選擇少的 (提高排班效率)
                 const sortedChildren = Object.keys(childrenMap).sort((a, b) => childrenMap[a].length - childrenMap[b].length);
 
-                // --- 1. 使用回溯法 (Backtracking) 尋找「所有完美無衝突」的組合 ---
                 let totalPerfectSolutionsCount = 0;
                 const perfectSolutions = [];
-                const MAX_SOLUTIONS_TO_KEEP = 15; // 為了介面好點選，最多展示 15 種差異方案
-                const HARD_LIMIT = 1000; // 防止極端狀況瀏覽器當機的計算上限
+                const MAX_SOLUTIONS_TO_KEEP = 15; 
+                const HARD_LIMIT = 1000; 
 
                 const backtrack = (childIdx, currentAssigned, usedSlots) => {
                     if (totalPerfectSolutionsCount >= HARD_LIMIT) return;
@@ -812,9 +824,7 @@
 
                 backtrack(0, {}, new Set());
 
-                // --- 2. 判斷計算結果並給予 UI 反饋 ---
                 if (totalPerfectSolutionsCount > 1) {
-                    // 有多種完美解，彈出選擇視窗讓老師挑選
                     setDialog({
                         isOpen: true,
                         type: 'choose-assignment',
@@ -823,11 +833,9 @@
                         totalCount: totalPerfectSolutionsCount
                     });
                 } else if (totalPerfectSolutionsCount === 1) {
-                    // 只有一種完美解，直接套用
                     updatePurposeSetting('boardData', perfectSolutions[0]);
                     showAlert('✨ 智慧自動排班完成！\n\n系統為您找到了 1 種「完美無衝突」的排班結果，已自動套用至排班板！');
                 } else {
-                    // --- 3. 找不到完美解，退回「容許衝突的最大匹配 (DFS)」算法 ---
                     const slotAssignments = {}; 
                     const finalBoardData = [];
 
@@ -861,7 +869,6 @@
                         if (matchedReq) finalBoardData.push(matchedReq);
                     }
 
-                    // 處理無完美解的衝突 (塞回第一志願呈現紅框)
                     unassignedChildren.forEach(cName => {
                         finalBoardData.push(childrenMap[cName][0]);
                     });
@@ -871,7 +878,6 @@
                 }
             };
 
-            // 修復：使用最新動態 State 防止舊資料覆蓋
             const handlePublishBoard = () => {
                 if (teacherSelectedClass === '全部' || teacherSelectedPurpose === '全部') return showAlert("請先選擇單一班級與目的！");
                 showConfirm("確定要把目前的排班結果發布給家長嗎？\n發布後，家長將可以在「預約結果通知」中看到這些安排！", () => {
@@ -926,6 +932,33 @@
                 link.download = `最終排班表_${teacherSelectedClass}_${teacherSelectedPurpose}.csv`;
                 document.body.appendChild(link); link.click(); document.body.removeChild(link);
                 showAlert('📊 匯出成功！\n已下載最終排班表 Excel 檔案。');
+            };
+
+            // 匯出排班板成圖檔
+            const exportBoardToImage = () => {
+                if (teacherSelectedClass === '全部' || teacherSelectedPurpose === '全部') return showAlert("請先選擇單一班級與目的！");
+                const currentSettings = ((classSettings[teacherSelectedClass] || {}).purposes || {})[teacherSelectedPurpose] || {};
+                const bData = currentSettings.boardData || [];
+                if (bData.length === 0) return showAlert('目前排班板上沒有資料可以匯出喔！');
+
+                const boardElement = document.getElementById('export-board-container');
+                if (!boardElement) return showAlert('找不到排班板畫面。');
+
+                setDialog({ isOpen: true, message: '📸 正在產生排班圖檔，請稍候...', type: 'alert', onConfirm: null });
+                
+                setTimeout(() => {
+                    html2canvas(boardElement, { backgroundColor: '#ffffff', scale: 2 }).then(canvas => {
+                        const link = document.createElement('a');
+                        link.download = `排班圖檔_${teacherSelectedClass}_${teacherSelectedPurpose}.png`;
+                        link.href = canvas.toDataURL('image/png');
+                        link.click();
+                        setDialog({ ...dialog, isOpen: false });
+                        setTimeout(() => showAlert('🖼️ 匯出成功！\n已下載排班結果圖檔。'), 100);
+                    }).catch(err => {
+                        console.error("圖檔匯出失敗", err);
+                        setDialog({ isOpen: true, message: '❌ 圖檔匯出失敗，請重試！', type: 'alert', onConfirm: null });
+                    });
+                }, 300);
             };
 
             const exportGAS = () => {
@@ -1066,6 +1099,12 @@
                 const prevMonth = () => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1));
 
                 const handleDeleteOrphan = (res) => {
+                    const pSet = ((classSettings[res.venue] || {}).purposes || {})[res.purpose] || {};
+                    const todayStr = formatDate(new Date());
+                    if (pSet.deadline && todayStr > pSet.deadline) {
+                        return showAlert("⚠️ 無法刪除！\n\n此活動的預約截止日期已過，系統已鎖定，無法再刪除紀錄喔！");
+                    }
+
                     showConfirm(`確定要刪除 【${res.childName || res.name || '未命名'}】 的無效預約紀錄嗎？\n(此預約原本的時段已被刪除)`, () => {
                         if (useLocalMode) {
                             saveLocal(reservations.filter(r => r.id !== res.id), null);
@@ -1078,7 +1117,17 @@
                     });
                 };
 
-                const handleCancelRes = (resId, pin) => {
+                const handleCancelRes = (res) => {
+                    const resId = res.id;
+                    const pin = res.pin;
+                    
+                    // 檢查是否超過截止日
+                    const pSet = ((classSettings[res.venue] || {}).purposes || {})[res.purpose] || {};
+                    const todayStr = formatDate(new Date());
+                    if (pSet.deadline && todayStr > pSet.deadline) {
+                        return showAlert("⚠️ 無法刪除！\n\n此活動的預約截止日期已過，系統已鎖定，無法再刪除或取消預約喔！");
+                    }
+
                     const promptMsg = viewRole === 'teacher' 
                         ? "請輸入確認碼以取消此預約：\n(💡 老師可直接輸入管理員密碼 8888 強制刪除)" 
                         : "請輸入確認碼以取消您的預約：";
@@ -1094,6 +1143,12 @@
                 };
 
                 const handleTeacherDeleteSlot = (cName, pName, slotId) => {
+                    const pSet = ((classSettings[cName] || {}).purposes || {})[pName] || {};
+                    const todayStr = formatDate(new Date());
+                    if (pSet.deadline && todayStr > pSet.deadline) {
+                        return showAlert("⚠️ 無法刪除！\n\n此活動的預約截止日期已過，系統已鎖定，無法再刪除開放時段喔！");
+                    }
+
                     showConfirm(`確定要刪除這個開放時段嗎？\n(注意：如果有家長已預約，預約紀錄仍會保留在資料庫中，但月曆上將不會再顯示此時段。)` , () => {
                         const classSets = classSettings[cName] || { purposes: {} };
                         const pSettings = classSets.purposes[pName] || { slots: [] };
@@ -1233,7 +1288,7 @@
                                                                     </div>
                                                                     
                                                                     {slotReservations.map(r => (
-                                                                        <div key={r.id} className="truncate text-slate-800 bg-white/60 p-0.5 rounded mt-0.5 cursor-pointer hover:bg-red-100 transition-colors" title={`點擊刪除 ${r.childName || r.name || '未命名'} 的預約`} onClick={() => handleCancelRes(r.id, r.pin)}>
+                                                                        <div key={r.id} className="truncate text-slate-800 bg-white/60 p-0.5 rounded mt-0.5 cursor-pointer hover:bg-red-100 transition-colors" title={`點擊刪除 ${r.childName || r.name || '未命名'} 的預約`} onClick={() => handleCancelRes(r)}>
                                                                             • {r.childName || r.name || '未命名'}
                                                                         </div>
                                                                     ))}
@@ -1246,7 +1301,7 @@
                                                                 <>
                                                                     <div className="font-bold text-slate-800 text-center">{slot.startTime}~{slot.endTime}</div>
                                                                     {myRes ? (
-                                                                        <div onClick={() => handleCancelRes(myRes.id, myRes.pin)} className="mt-1 bg-green-200 text-green-900 p-1 rounded text-center font-bold cursor-pointer hover:bg-red-200 transition-colors" title="點擊取消預約">
+                                                                        <div onClick={() => handleCancelRes(myRes)} className="mt-1 bg-green-200 text-green-900 p-1 rounded text-center font-bold cursor-pointer hover:bg-red-200 transition-colors" title="點擊取消預約">
                                                                             ✓ 你的預約<br/>({myRes.childName || myRes.name || '未命名'})
                                                                         </div>
                                                                     ) : (
@@ -1765,96 +1820,109 @@
                                         <button onClick={exportBoardToExcel} className="sketchy-btn sketchy-border-sm px-4 py-2 bg-green-600 text-white font-bold flex items-center gap-2 whitespace-nowrap">
                                             <span>📊</span> 匯出最終排班表
                                         </button>
+                                        <button onClick={exportBoardToImage} className="sketchy-btn sketchy-border-sm px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white font-bold flex items-center gap-2 whitespace-nowrap">
+                                            <span>🖼️</span> 下載排班圖檔
+                                        </button>
                                     </div>
 
-                                    <div className="flex flex-wrap gap-6 pb-4 pt-2 items-start justify-center md:justify-start">
-                                        {(() => {
-                                            const cSet = ((classSettings[teacherSelectedClass] || {}).purposes || {})[teacherSelectedPurpose] || {};
-                                            const bData = cSet.boardData || [];
-                                            
-                                            const allDatesSet = new Set([
-                                                ...(cSet.slots || []).map(s => s.date),
-                                                ...bData.map(r => r.date)
-                                            ]);
-                                            const allDates = Array.from(allDatesSet).sort();
-
-                                            if (allDates.length === 0) return <div className="text-slate-400 font-bold p-4 w-full text-center">請先載入預約，或新增開放時段喔！</div>;
-
-                                            return allDates.map(date => {
-                                                const slotsForDate = [];
-                                                const slotMap = new Map();
+                                    {/* 用來截圖的畫布容器 */}
+                                    <div id="export-board-container" className="p-2 sm:p-4 bg-white rounded-xl">
+                                        <h2 className="text-2xl md:text-3xl font-black text-center text-slate-800 mb-6 border-b-4 border-slate-800 pb-3 uppercase tracking-widest hidden export-show-title">
+                                            【{teacherSelectedClass}】{teacherSelectedPurpose} - 最終排班表
+                                        </h2>
+                                        
+                                        <style>{`#export-board-container { margin: 0 auto; } #export-board-container .export-show-title { display: none; }`}</style>
+                                        
+                                        <div className="flex flex-wrap gap-6 pb-4 pt-2 items-start justify-center md:justify-start">
+                                            {(() => {
+                                                const cSet = ((classSettings[teacherSelectedClass] || {}).purposes || {})[teacherSelectedPurpose] || {};
+                                                const bData = cSet.boardData || [];
                                                 
-                                                (cSet.slots || []).forEach(s => {
-                                                    if (s.date === date) {
-                                                        const key = `${s.startTime}-${s.endTime}`;
-                                                        if (!slotMap.has(key)) {
-                                                            slotMap.set(key, s);
-                                                            slotsForDate.push(s);
-                                                        }
-                                                    }
-                                                });
-                                                
-                                                bData.forEach(r => {
-                                                    if (r.date === date) {
-                                                        const key = `${r.startTime}-${r.endTime}`;
-                                                        if (!slotMap.has(key)) {
-                                                            const newSlot = { date: r.date, startTime: r.startTime, endTime: r.endTime, id: `orphaned_${key}` };
-                                                            slotMap.set(key, newSlot);
-                                                            slotsForDate.push(newSlot);
-                                                        }
-                                                    }
-                                                });
-                                                slotsForDate.sort((a,b) => a.startTime.localeCompare(b.startTime));
+                                                const allDatesSet = new Set([
+                                                    ...(cSet.slots || []).map(s => s.date),
+                                                    ...bData.map(r => r.date)
+                                                ]);
+                                                const allDates = Array.from(allDatesSet).sort();
 
-                                                return (
-                                                    <div key={date} className="w-full md:w-[320px] lg:w-[340px] flex-none bg-slate-100 p-4 rounded-xl sketchy-border-sm flex flex-col">
-                                                        <div className="text-center font-black text-2xl text-slate-800 border-b-2 border-slate-300 pb-2 mb-4">
-                                                            📅 {date}
-                                                        </div>
-                                                        <div className="flex-1 space-y-4">
-                                                            {slotsForDate.map(slot => {
-                                                                const cards = bData.filter(r => r.date === slot.date && r.startTime === slot.startTime);
-                                                                const isConflict = cards.length > 1;
-                                                                const isBestChoice = cards.length === 1;
+                                                if (allDates.length === 0) return <div className="text-slate-400 font-bold p-4 w-full text-center">請先載入預約，或新增開放時段喔！</div>;
 
-                                                                return (
-                                                                    <div 
-                                                                        key={`${slot.date}_${slot.startTime}`}
-                                                                        className={`p-3 rounded-lg sketchy-border-sm flex flex-col ${isConflict ? 'bg-red-100 border-red-400 border-2' : isBestChoice ? 'bg-green-50 border-green-400 border-2' : 'bg-white border border-slate-300'}`}
-                                                                        onDragOver={e => e.preventDefault()}
-                                                                        onDrop={e => handleBoardDrop(e, slot)}
-                                                                    >
-                                                                        <div className="text-center font-bold mb-2">
-                                                                            <span className="text-blue-700 bg-blue-50 px-2 py-1 rounded-full text-sm border border-blue-200">
-                                                                                🕒 {slot.startTime} ~ {slot.endTime}
-                                                                            </span>
+                                                return allDates.map(date => {
+                                                    const slotsForDate = [];
+                                                    const slotMap = new Map();
+                                                    
+                                                    (cSet.slots || []).forEach(s => {
+                                                        if (s.date === date) {
+                                                            const key = `${s.startTime}-${s.endTime}`;
+                                                            if (!slotMap.has(key)) {
+                                                                slotMap.set(key, s);
+                                                                slotsForDate.push(s);
+                                                            }
+                                                        }
+                                                    });
+                                                    
+                                                    bData.forEach(r => {
+                                                        if (r.date === date) {
+                                                            const key = `${r.startTime}-${r.endTime}`;
+                                                            if (!slotMap.has(key)) {
+                                                                const newSlot = { date: r.date, startTime: r.startTime, endTime: r.endTime, id: `orphaned_${key}` };
+                                                                slotMap.set(key, newSlot);
+                                                                slotsForDate.push(newSlot);
+                                                            }
+                                                        }
+                                                    });
+                                                    slotsForDate.sort((a,b) => a.startTime.localeCompare(b.startTime));
+
+                                                    // 使用 calc(33.333% - 16px) 來保證大螢幕下完美呈現 3 欄
+                                                    return (
+                                                        <div key={date} className="w-full md:w-[calc(50%-12px)] lg:w-[calc(33.333%-16px)] flex-none bg-slate-100 p-4 rounded-xl sketchy-border-sm flex flex-col">
+                                                            <div className="text-center font-black text-2xl text-slate-800 border-b-2 border-slate-300 pb-2 mb-4">
+                                                                📅 {date}
+                                                            </div>
+                                                            <div className="flex-1 space-y-4">
+                                                                {slotsForDate.map(slot => {
+                                                                    const cards = bData.filter(r => r.date === slot.date && r.startTime === slot.startTime);
+                                                                    const isConflict = cards.length > 1;
+                                                                    const isBestChoice = cards.length === 1;
+
+                                                                    return (
+                                                                        <div 
+                                                                            key={`${slot.date}_${slot.startTime}`}
+                                                                            className={`p-3 rounded-lg sketchy-border-sm flex flex-col ${isConflict ? 'bg-red-100 border-red-400 border-2' : isBestChoice ? 'bg-green-50 border-green-400 border-2' : 'bg-white border border-slate-300'}`}
+                                                                            onDragOver={e => e.preventDefault()}
+                                                                            onDrop={e => handleBoardDrop(e, slot)}
+                                                                        >
+                                                                            <div className="text-center font-bold mb-2">
+                                                                                <span className="text-blue-700 bg-blue-50 px-2 py-1 rounded-full text-sm border border-blue-200">
+                                                                                    🕒 {slot.startTime} ~ {slot.endTime}
+                                                                                </span>
+                                                                            </div>
+                                                                            {isConflict && <div className="text-xs bg-red-200 text-red-700 font-bold text-center mb-2 py-1 rounded animate-pulse">⚠️ 衝突！請協調移開 (共 {cards.length} 人)</div>}
+                                                                            <div className="flex-1 space-y-2 min-h-[60px]">
+                                                                                {cards.map(card => {
+                                                                                    return (
+                                                                                        <div
+                                                                                            key={card.id}
+                                                                                            draggable
+                                                                                            onDragStart={e => handleBoardDragStart(e, card.id)}
+                                                                                            className={`p-2 rounded shadow-sm cursor-grab active:cursor-grabbing relative group ${isBestChoice ? 'border-2 border-yellow-500 shadow-md' : 'border border-slate-300'}`}
+                                                                                            style={{ backgroundColor: card.color || getColorForName(card.childName || card.name) }}
+                                                                                        >
+                                                                                            <div className="font-bold text-slate-800 text-base pr-6">{card.childName || card.name || '未命名'}</div>
+                                                                                            {isBestChoice && <div className="mt-1 text-[10px] bg-yellow-400 text-yellow-900 px-1.5 py-0.5 rounded inline-block font-bold shadow-sm">⭐ 該小孩的最佳選取時段</div>}
+                                                                                            <button onClick={() => handleBoardDeleteRes(card.id)} className="absolute top-1 right-1 text-slate-400 hover:text-red-500 font-bold w-5 h-5 flex items-center justify-center bg-white/70 hover:bg-red-100 rounded-full transition-colors opacity-0 group-hover:opacity-100 border border-slate-200" title="刪除此紀錄">×</button>
+                                                                                        </div>
+                                                                                    )
+                                                                                })}
+                                                                            </div>
                                                                         </div>
-                                                                        {isConflict && <div className="text-xs bg-red-200 text-red-700 font-bold text-center mb-2 py-1 rounded animate-pulse">⚠️ 衝突！請協調移開 (共 {cards.length} 人)</div>}
-                                                                        <div className="flex-1 space-y-2 min-h-[60px]">
-                                                                            {cards.map(card => {
-                                                                                return (
-                                                                                    <div
-                                                                                        key={card.id}
-                                                                                        draggable
-                                                                                        onDragStart={e => handleBoardDragStart(e, card.id)}
-                                                                                        className={`p-2 rounded shadow-sm cursor-grab active:cursor-grabbing relative group ${isBestChoice ? 'border-2 border-yellow-500 shadow-md' : 'border border-slate-300'}`}
-                                                                                        style={{ backgroundColor: card.color || getColorForName(card.childName || card.name) }}
-                                                                                    >
-                                                                                        <div className="font-bold text-slate-800 text-base pr-6">{card.childName || card.name || '未命名'}</div>
-                                                                                        {isBestChoice && <div className="mt-1 text-[10px] bg-yellow-400 text-yellow-900 px-1.5 py-0.5 rounded inline-block font-bold shadow-sm">⭐ 該小孩的最佳選取時段</div>}
-                                                                                        <button onClick={() => handleBoardDeleteRes(card.id)} className="absolute top-1 right-1 text-slate-400 hover:text-red-500 font-bold w-5 h-5 flex items-center justify-center bg-white/70 hover:bg-red-100 rounded-full transition-colors opacity-0 group-hover:opacity-100 border border-slate-200" title="刪除此紀錄">×</button>
-                                                                                    </div>
-                                                                                )
-                                                                            })}
-                                                                        </div>
-                                                                    </div>
-                                                                );
-                                                            })}
+                                                                    );
+                                                                })}
+                                                            </div>
                                                         </div>
-                                                    </div>
-                                                );
-                                            });
-                                        })()}
+                                                    );
+                                                });
+                                            })()}
+                                        </div>
                                     </div>
                                     
                                     <div className="text-slate-500 font-bold text-sm text-center mt-2">
