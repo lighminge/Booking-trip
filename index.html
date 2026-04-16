@@ -749,11 +749,10 @@
                 updatePurposeSetting('boardData', newBoardData);
             };
 
-            // 智慧自動排班：最大二分圖匹配 (DFS)
+            // 智慧自動排班：回溯演算法 (計算所有可能性) + 最大二分圖匹配 (DFS防呆)
             const handleAutoResolveBoard = () => {
                 if (teacherSelectedClass === '全部' || teacherSelectedPurpose === '全部') return showAlert("請先選擇單一班級與目的來進行自動排班喔！");
                 
-                // 從原始 reservations 抓取確保最完整
                 const originalRequests = reservations.filter(r => r.venue === teacherSelectedClass && r.purpose === teacherSelectedPurpose);
                 if (originalRequests.length === 0) return showAlert('目前沒有任何家長預約資料，無法進行排班喔！');
 
@@ -764,51 +763,99 @@
                     childrenMap[name].push(r);
                 });
 
-                // 優先安排選擇少的
+                // 優先安排選擇少的 (提高排班效率)
                 const sortedChildren = Object.keys(childrenMap).sort((a, b) => childrenMap[a].length - childrenMap[b].length);
 
-                const slotAssignments = {}; 
-                const finalBoardData = [];
+                // --- 1. 使用回溯法 (Backtracking) 尋找「所有完美無衝突」的組合 ---
+                let totalPerfectSolutionsCount = 0;
+                const perfectSolutions = [];
+                const MAX_SOLUTIONS_TO_KEEP = 15; // 為了介面好點選，最多展示 15 種差異方案
+                const HARD_LIMIT = 1000; // 防止極端狀況瀏覽器當機的計算上限
 
-                // DFS 尋找增廣路徑 (空位調換)
-                const tryAssign = (childName, visited) => {
-                    const requests = childrenMap[childName];
-                    for (let req of requests) {
+                const backtrack = (childIdx, currentAssigned, usedSlots) => {
+                    if (totalPerfectSolutionsCount >= HARD_LIMIT) return;
+                    if (childIdx === sortedChildren.length) {
+                        totalPerfectSolutionsCount++;
+                        if (perfectSolutions.length < MAX_SOLUTIONS_TO_KEEP) {
+                            perfectSolutions.push(Object.values(currentAssigned));
+                        }
+                        return;
+                    }
+
+                    const childName = sortedChildren[childIdx];
+                    const reqs = childrenMap[childName];
+
+                    for (let req of reqs) {
                         const slotKey = req.date + '_' + req.startTime;
-                        if (!visited.has(slotKey)) {
-                            visited.add(slotKey);
-                            if (!slotAssignments[slotKey] || tryAssign(slotAssignments[slotKey], visited)) {
-                                slotAssignments[slotKey] = childName;
-                                return true;
-                            }
+                        if (!usedSlots.has(slotKey)) {
+                            usedSlots.add(slotKey);
+                            currentAssigned[childName] = req;
+                            backtrack(childIdx + 1, currentAssigned, usedSlots);
+                            usedSlots.delete(slotKey);
+                            delete currentAssigned[childName];
                         }
                     }
-                    return false;
                 };
 
-                const unassignedChildren = [];
-                
-                sortedChildren.forEach(childName => {
-                    const visited = new Set();
-                    if (!tryAssign(childName, visited)) {
-                        unassignedChildren.push(childName);
+                backtrack(0, {}, new Set());
+
+                // --- 2. 判斷計算結果並給予 UI 反饋 ---
+                if (totalPerfectSolutionsCount > 1) {
+                    // 有多種完美解，彈出選擇視窗讓老師挑選
+                    setDialog({
+                        isOpen: true,
+                        type: 'choose-assignment',
+                        message: '',
+                        solutions: perfectSolutions,
+                        totalCount: totalPerfectSolutionsCount
+                    });
+                } else if (totalPerfectSolutionsCount === 1) {
+                    // 只有一種完美解，直接套用
+                    updatePurposeSetting('boardData', perfectSolutions[0]);
+                    showAlert('✨ 智慧自動排班完成！\n\n系統為您找到了 1 種「完美無衝突」的排班結果，已自動套用至排班板！');
+                } else {
+                    // --- 3. 找不到完美解，退回「容許衝突的最大匹配 (DFS)」算法 ---
+                    const slotAssignments = {}; 
+                    const finalBoardData = [];
+
+                    const tryAssign = (childName, visited) => {
+                        const requests = childrenMap[childName];
+                        for (let req of requests) {
+                            const slotKey = req.date + '_' + req.startTime;
+                            if (!visited.has(slotKey)) {
+                                visited.add(slotKey);
+                                if (!slotAssignments[slotKey] || tryAssign(slotAssignments[slotKey], visited)) {
+                                    slotAssignments[slotKey] = childName;
+                                    return true;
+                                }
+                            }
+                        }
+                        return false;
+                    };
+
+                    const unassignedChildren = [];
+                    sortedChildren.forEach(childName => {
+                        const visited = new Set();
+                        if (!tryAssign(childName, visited)) {
+                            unassignedChildren.push(childName);
+                        }
+                    });
+
+                    for (let slotKey in slotAssignments) {
+                        const cName = slotAssignments[slotKey];
+                        const reqs = childrenMap[cName];
+                        const matchedReq = reqs.find(r => (r.date + '_' + r.startTime) === slotKey);
+                        if (matchedReq) finalBoardData.push(matchedReq);
                     }
-                });
 
-                for (let slotKey in slotAssignments) {
-                    const cName = slotAssignments[slotKey];
-                    const reqs = childrenMap[cName];
-                    const matchedReq = reqs.find(r => (r.date + '_' + r.startTime) === slotKey);
-                    if (matchedReq) finalBoardData.push(matchedReq);
+                    // 處理無完美解的衝突 (塞回第一志願呈現紅框)
+                    unassignedChildren.forEach(cName => {
+                        finalBoardData.push(childrenMap[cName][0]);
+                    });
+
+                    updatePurposeSetting('boardData', finalBoardData);
+                    showAlert('⚠️ 自動排班完成 (含衝突)！\n\n目前家長志願無法達成「零衝突」完美分配。系統已盡最大努力排開，無法排開的已用「紅框」標示，請老師手動微調唷！');
                 }
-
-                // 處理無完美解的衝突
-                unassignedChildren.forEach(cName => {
-                    finalBoardData.push(childrenMap[cName][0]);
-                });
-
-                updatePurposeSetting('boardData', finalBoardData);
-                showAlert('✨ 智慧自動排班完成！\n\n系統已成功分析所有小孩的志願，並進行了最佳化的「空位調換」，尋找出衝突最少的完美排班！\n(若仍有紅框衝突，代表時段真的不夠分配，請老師進行最後手動微調唷！)');
             };
 
             const handlePublishBoard = () => {
@@ -1942,10 +1989,10 @@
                         <div className={`fixed inset-0 bg-slate-900 bg-opacity-40 flex items-center justify-center z-50 px-4`}>
                             <div className={`bg-white p-6 md:p-8 rounded-2xl sketchy-border w-full shadow-2xl transform scale-100 transition-transform ${dialog.type === 'gas' ? 'max-w-2xl' : 'max-w-sm'}`}>
                                 <h3 className="text-2xl font-bold text-slate-800 mb-4">
-                                    {dialog.type === 'confirm' ? '🤔 請確認' : dialog.type === 'pin' ? '🔐 權限驗證' : dialog.type === 'show-pin' ? '🎉 預約成功' : dialog.type === 'gas' ? '📜 產生 GAS 腳本' : dialog.type === 'prompt' ? '📝 新增項目' : '💡 提示'}
+                                    {dialog.type === 'confirm' ? '🤔 請確認' : dialog.type === 'pin' ? '🔐 權限驗證' : dialog.type === 'show-pin' ? '🎉 預約成功' : dialog.type === 'gas' ? '📜 產生 GAS 腳本' : dialog.type === 'prompt' ? '📝 新增項目' : dialog.type === 'choose-assignment' ? '🎯 選擇排班方案' : '💡 提示'}
                                 </h3>
                                 
-                                {dialog.type !== 'show-pin' && dialog.type !== 'gas' && <div className="text-xl text-slate-600 mb-6 whitespace-pre-wrap leading-relaxed">{dialog.message}</div>}
+                                {dialog.type !== 'show-pin' && dialog.type !== 'gas' && dialog.type !== 'choose-assignment' && <div className="text-xl text-slate-600 mb-6 whitespace-pre-wrap leading-relaxed">{dialog.message}</div>}
                                 
                                 {dialog.type === 'show-pin' && (
                                     <div className="mb-6 text-slate-600">
@@ -1986,8 +2033,33 @@
                                     </div>
                                 )}
 
+                                {dialog.type === 'choose-assignment' && (
+                                    <div className="flex flex-col items-center w-full mb-6">
+                                        <div className="text-lg text-slate-700 font-bold mb-4 w-full text-left">
+                                            系統分析出共 <span className="text-3xl text-blue-600 mx-1">{dialog.totalCount >= 1000 ? '1000+' : dialog.totalCount}</span> 種「零衝突」完美組合！
+                                            <br/><span className="text-sm text-slate-500 mt-1 inline-block">(為方便選擇，已為您列出前 {dialog.solutions?.length} 種方案)</span>
+                                        </div>
+                                        <div className="flex flex-col gap-3 w-full max-h-[40vh] overflow-y-auto no-scrollbar pr-2 pb-2">
+                                            {dialog.solutions?.map((sol, idx) => (
+                                                <button
+                                                    key={idx}
+                                                    onClick={() => {
+                                                        updatePurposeSetting('boardData', sol);
+                                                        setDialog({ ...dialog, isOpen: false });
+                                                        showAlert(`✨ 已成功套用「排班方案 ${idx + 1}」！\n您可以直接在排班板預覽看看這個版本是否滿意。`);
+                                                    }}
+                                                    className="sketchy-btn sketchy-border-sm w-full py-3 bg-blue-50 hover:bg-blue-100 text-blue-800 font-bold text-lg flex justify-between px-6 items-center"
+                                                >
+                                                    <span>方案 {idx + 1}</span>
+                                                    <span className="text-sm bg-white px-2 py-1 rounded sketchy-border-sm">👉 點擊套用</span>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+
                                 <div className="flex justify-end gap-3">
-                                    {(dialog.type === 'confirm' || dialog.type === 'pin' || dialog.type === 'prompt') && <button onClick={() => setDialog({ ...dialog, isOpen: false })} className="sketchy-btn sketchy-border-sm px-5 py-2 bg-gray-100 text-slate-700 font-bold text-lg">取消</button>}
+                                    {(dialog.type === 'confirm' || dialog.type === 'pin' || dialog.type === 'prompt' || dialog.type === 'choose-assignment') && <button onClick={() => setDialog({ ...dialog, isOpen: false })} className="sketchy-btn sketchy-border-sm px-5 py-2 bg-gray-100 text-slate-700 font-bold text-lg">取消</button>}
                                     
                                     {dialog.type === 'gas' ? (
                                         <button onClick={() => setDialog({ ...dialog, isOpen: false })} className="sketchy-btn sketchy-border-sm px-5 py-2 bg-slate-800 text-white font-bold text-lg">關閉</button>
