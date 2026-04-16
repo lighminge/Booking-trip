@@ -204,6 +204,10 @@
             const [isSubmitting, setIsSubmitting] = useState(false);
             const [isReservationSlipOpen, setIsReservationSlipOpen] = useState(false);
             const [isNotificationOpen, setIsNotificationOpen] = useState(false);
+            
+            // --- 新增：未讀通知追蹤狀態 ---
+            const [hasUnreadNotification, setHasUnreadNotification] = useState(false);
+            const [prevNotifCount, setPrevNotifCount] = useState(0);
 
             // 對話框狀態
             const [dialog, setDialog] = useState({ isOpen: false, message: '', type: 'alert', onConfirm: null, expectedPin: '', pinToCopy: '', warning: '', gasCode: '' });
@@ -331,7 +335,8 @@
                         if (pData.isPublished && pData.publishedData) {
                             pData.publishedData.forEach(r => {
                                 const rName = (r.childName || r.name || '').trim();
-                                let isMatch = childNameTrimmed ? (rName === childNameTrimmed) : (mySavedPins[r.id] === r.pin);
+                                // 如果有輸入姓名就只比對姓名，沒輸入的話就檢查瀏覽器記憶體
+                                let isMatch = (mySavedPins[r.id] === r.pin) || (childNameTrimmed && rName === childNameTrimmed);
 
                                 if (isMatch) {
                                     if (!results.some(existing => existing.id === r.id)) {
@@ -344,6 +349,14 @@
                 });
                 return results.sort((a, b) => (a.date + a.startTime).localeCompare(b.date + b.startTime));
             }, [classSettings, childNameTrimmed, mySavedPins, role]);
+
+            // --- 新增：監聽結果數量，觸發跳動的未讀提醒 ---
+            useEffect(() => {
+                if (role === 'parent' && parentNotificationData.length > prevNotifCount) {
+                    setHasUnreadNotification(true);
+                }
+                setPrevNotifCount(parentNotificationData.length);
+            }, [parentNotificationData.length, role, prevNotifCount]);
 
             const orphanedReservations = useMemo(() => {
                 if (role !== 'teacher') return [];
@@ -858,12 +871,36 @@
                 }
             };
 
+            // 修復：使用最新動態 State 防止舊資料覆蓋
             const handlePublishBoard = () => {
                 if (teacherSelectedClass === '全部' || teacherSelectedPurpose === '全部') return showAlert("請先選擇單一班級與目的！");
                 showConfirm("確定要把目前的排班結果發布給家長嗎？\n發布後，家長將可以在「預約結果通知」中看到這些安排！", () => {
-                    const currentSettings = ((classSettings[teacherSelectedClass] || {}).purposes || {})[teacherSelectedPurpose] || {};
-                    updatePurposeSetting('publishedData', currentSettings.boardData || []);
-                    updatePurposeSetting('isPublished', true);
+                    setClassSettings(prevSettings => {
+                        const classSets = prevSettings[teacherSelectedClass] || { purposes: {} };
+                        const purposeSets = classSets.purposes[teacherSelectedPurpose] || { ...DEFAULT_PURPOSE_SETTINGS };
+                        const currentBoardData = purposeSets.boardData || [];
+                        
+                        const newSettings = {
+                            ...prevSettings,
+                            [teacherSelectedClass]: {
+                                ...classSets,
+                                purposes: {
+                                    ...classSets.purposes,
+                                    [teacherSelectedPurpose]: {
+                                        ...purposeSets,
+                                        publishedData: currentBoardData,
+                                        isPublished: true
+                                    }
+                                }
+                            }
+                        };
+
+                        if (useLocalMode) saveLocal(null, newSettings);
+                        else dbSettings.set({ classes: newSettings }, { merge: true }).catch(e => handleFirebaseError(e, "儲存設定"));
+
+                        return newSettings;
+                    });
+                    
                     showAlert("📢 成功！最終排班結果已經發送給家長囉！");
                 });
             };
@@ -1354,15 +1391,28 @@
                                                         <span className={`${isIncomplete ? 'text-red-600' : 'text-blue-600'} text-xs`}>(共 {child.slots.length} 筆)</span>
                                                     </div>
                                                     <div className="space-y-1 mt-2 border-t border-slate-100 pt-2">
-                                                        {child.slots.map(s => (
-                                                            <div key={s.id} className={`text-xs font-medium p-1.5 rounded border ${isIncomplete ? 'bg-white border-red-200 text-red-700' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>
-                                                                <div className={`font-bold mb-0.5 flex gap-1 ${isIncomplete ? 'text-red-800' : 'text-slate-700'}`}>
-                                                                    {teacherSelectedClass === '全部' && <span className={`${isIncomplete ? 'bg-red-100' : 'bg-slate-200'} px-1 rounded`}>{s.venue}</span>}
-                                                                    {teacherSelectedPurpose === '全部' && <span className="bg-orange-100 text-orange-800 px-1 rounded">{s.purpose}</span>}
+                                                        {child.slots.map(s => {
+                                                            // 抓取該時段是否為已發布的確定狀態
+                                                            const pSet = ((classSettings[s.venue] || {}).purposes || {})[s.purpose] || {};
+                                                            const isPublished = pSet.isPublished;
+                                                            const confirmedSlot = isPublished ? (pSet.publishedData || []).find(r => r.id === s.id) : null;
+                                                            const isConfirmed = !!confirmedSlot;
+
+                                                            return (
+                                                                <div key={s.id} className={`text-xs font-medium p-2 rounded border ${isConfirmed ? 'bg-green-50 border-green-400 text-green-900 shadow-sm' : isIncomplete ? 'bg-white border-red-200 text-red-700' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>
+                                                                    <div className={`font-bold mb-1 flex justify-between items-start gap-1 ${isConfirmed ? 'text-green-800' : isIncomplete ? 'text-red-800' : 'text-slate-700'}`}>
+                                                                        <div className="flex gap-1 flex-wrap">
+                                                                            {teacherSelectedClass === '全部' && <span className={`${isConfirmed ? 'bg-green-200 text-green-900' : isIncomplete ? 'bg-red-100' : 'bg-slate-200'} px-1 rounded`}>{s.venue}</span>}
+                                                                            {teacherSelectedPurpose === '全部' && <span className={`${isConfirmed ? 'bg-green-200 text-green-900' : 'bg-orange-100 text-orange-800'} px-1 rounded`}>{s.purpose}</span>}
+                                                                        </div>
+                                                                        {isConfirmed && <span className="bg-green-600 text-white px-1.5 py-0.5 rounded text-[10px] whitespace-nowrap shadow-sm flex items-center gap-1">✅ 已確定預約</span>}
+                                                                    </div>
+                                                                    <div className={isConfirmed ? "font-bold text-sm" : ""}>
+                                                                        📅 {isConfirmed ? confirmedSlot.date : s.date} 🕒 {isConfirmed ? `${confirmedSlot.startTime}~${confirmedSlot.endTime}` : `${s.startTime}~${s.endTime}`}
+                                                                    </div>
                                                                 </div>
-                                                                📅 {s.date} 🕒 {s.startTime}~{s.endTime}
-                                                            </div>
-                                                        ))}
+                                                            );
+                                                        })}
                                                     </div>
                                                 </div>
                                             );
@@ -1376,14 +1426,19 @@
                     {/* 家長專用：左側浮動工具列 */}
                     {role === 'parent' && (
                         <>
-                            {/* 1. 我的預約單 */}
+                            {/* 1. 我的預約單與結果通知按鈕 */}
                             <div className={`fixed left-0 top-1/4 z-40 transition-transform duration-300 ${isReservationSlipOpen || isNotificationOpen ? '-translate-x-full' : 'translate-x-0'}`}>
                                 <button onClick={() => setIsReservationSlipOpen(true)} className="sketchy-btn bg-green-100 text-green-900 border-2 border-l-0 border-slate-800 font-bold py-3 px-2 rounded-r-xl shadow-md flex flex-col items-center gap-1 mb-2">
                                     <span className="text-xl">📋</span>
                                     <span className="text-sm font-bold flex flex-col"><span>預</span><span>約</span><span>單</span></span>
                                 </button>
                                 
-                                <button onClick={() => setIsNotificationOpen(true)} className="sketchy-btn bg-yellow-100 text-yellow-900 border-2 border-l-0 border-slate-800 font-bold py-3 px-2 rounded-r-xl shadow-md flex flex-col items-center gap-1">
+                                <button onClick={() => { setIsNotificationOpen(true); setHasUnreadNotification(false); }} className="sketchy-btn bg-yellow-100 text-yellow-900 border-2 border-l-0 border-slate-800 font-bold py-3 px-2 rounded-r-xl shadow-md flex flex-col items-center gap-1 relative">
+                                    {hasUnreadNotification && (
+                                        <span className="absolute -top-2 -right-2 bg-red-500 text-white text-[10px] font-black px-2 py-1 rounded-full animate-bounce shadow-md border-2 border-white z-50">
+                                            NEW!
+                                        </span>
+                                    )}
                                     <span className="text-xl">🔔</span>
                                     <span className="text-sm font-bold flex flex-col"><span>結</span><span>果</span><span>通</span><span>知</span></span>
                                 </button>
@@ -1450,18 +1505,27 @@
                                 <div className="p-3 bg-yellow-50 text-xs font-bold text-yellow-800 text-center border-b border-yellow-200">
                                     💡 老師發布最終排班結果後，會在這裡顯示喔！
                                 </div>
-                                <div className="flex-1 overflow-y-auto p-3 space-y-3 no-scrollbar bg-slate-50/50">
+                                <div className="flex-1 overflow-y-auto p-3 space-y-4 no-scrollbar bg-slate-50/50">
                                     {parentNotificationData.length === 0 ? (
-                                        <div className="text-center text-slate-400 py-6 font-bold text-sm">目前尚無已發布的結果通知。</div>
+                                        <div className="text-center text-slate-400 py-6 font-bold text-sm">
+                                            目前尚無已發布的結果通知。<br/>
+                                            <span className="text-[11px] font-normal block mt-2 text-slate-500">💡 溫馨提醒：若更換裝置，請先在左側表單輸入「小孩姓名」查詢喔！</span>
+                                        </div>
                                     ) : (
                                         parentNotificationData.map(res => (
-                                            <div key={`pub_${res.id}`} className="bg-white p-3 rounded-lg sketchy-border-sm text-sm shadow-sm relative border-l-4 border-green-500">
-                                                <div className="font-bold text-slate-800 text-base mb-1">{res.childName || res.name || '未命名'}</div>
-                                                <div className="text-blue-700 font-bold text-[12px] mb-1">
+                                            <div key={`pub_${res.id}`} className="bg-white p-4 rounded-xl sketchy-border-sm shadow-md relative border-l-8 border-green-500 mx-1">
+                                                <div className="font-bold text-slate-800 text-lg mb-1">{res.childName || res.name || '未命名'}</div>
+                                                <div className="text-blue-700 font-bold text-sm mb-3 pb-2 border-b border-slate-100">
                                                     【{res.venue}】 {res.purpose}
                                                 </div>
-                                                <div className="text-slate-600 text-xs font-medium bg-green-50 p-1.5 rounded flex items-center gap-1">
-                                                    <span>🎉 成功安排於：<br/>📅 {res.date} 🕒 {res.startTime}~{res.endTime}</span>
+                                                <div className="bg-green-50 p-3 rounded-lg border border-green-200">
+                                                    <div className="text-green-800 font-bold text-sm mb-2 flex items-center gap-1"><span>🎉</span> 成功安排於：</div>
+                                                    <div className="text-xl text-slate-800 font-black tracking-wide ml-1">
+                                                        📅 {res.date}
+                                                    </div>
+                                                    <div className="text-xl text-slate-800 font-black tracking-wide ml-1 mt-1">
+                                                        🕒 {res.startTime} ~ {res.endTime}
+                                                    </div>
                                                 </div>
                                             </div>
                                         ))
