@@ -1972,13 +1972,20 @@
                                                         className="sketchy-border-sm w-full px-3 py-2 bg-blue-50 text-xl font-bold"
                                                         disabled={isParentLocked}
                                                     >
-                                                        {Object.keys((classSettings[parentForm.venue] || {}).purposes || {}).length === 0 ? (
-                                                            <option value="" disabled>目前無開放預約</option>
-                                                        ) : (
-                                                            Object.keys((classSettings[parentForm.venue] || {}).purposes || {}).map(p => (
+                                                        {(() => {
+                                                            const todayStr = formatDate(new Date());
+                                                            const validPurposes = Object.keys((classSettings[parentForm.venue] || {}).purposes || {}).filter(p => {
+                                                                const pSet = classSettings[parentForm.venue].purposes[p];
+                                                                return !pSet.deadline || pSet.deadline >= todayStr;
+                                                            });
+                                                            
+                                                            if (validPurposes.length === 0) {
+                                                                return <option value="" disabled>目前無開放預約</option>;
+                                                            }
+                                                            return validPurposes.map(p => (
                                                                 <option key={p} value={p}>{p}</option>
-                                                            ))
-                                                        )}
+                                                            ));
+                                                        })()}
                                                     </select>
                                                 </div>
                                             </div>
